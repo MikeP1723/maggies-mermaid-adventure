@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Maggie's Mermaid Adventure</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #020d1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100dvw;
+      height: 100dvh;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      touch-action: none;
+    }
+
+    canvas {
+      border: 2px solid #00b4d8;
+      box-shadow: 0 0 30px #00b4d888;
+      image-rendering: pixelated;
+      max-width: 100dvw;
+      max-height: 100dvh;
+      width: auto;
+      height: auto;
+      display: block;
+      touch-action: none;
+    }
+
+    #ui {
+      color: #caf0f8;
+      margin-top: 6px;
+      font-size: 12px;
+      text-align: center;
+      opacity: 0.6;
+    }
+
+    @media (hover: none) and (pointer: coarse) {
+      #ui { display: none; }
+    }
+
+    #rotate-hint {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #020d1a;
+      color: #caf0f8;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      text-align: center;
+      gap: 16px;
+      z-index: 10;
+    }
+
+    #rotate-hint span { font-size: 48px; }
+
+    @media (orientation: portrait) and (max-width: 900px) {
+      #rotate-hint { display: flex; }
+    }
+  </style>
+</head>
+<body>
+  <div id="rotate-hint">
+    <span>&#x21BB;</span>
+    Rotate your device for the best experience
+  </div>
+  <canvas id="game" width="800" height="400"></canvas>
+  <div id="ui">Arrow keys / WASD to move &nbsp;|&nbsp; Up / W to swim &nbsp;|&nbsp; Z / X / Space to attack</div>
+  <script src="game.js"></script>
+</body>
+</html>

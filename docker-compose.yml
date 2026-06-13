@@ -1,0 +1,7 @@
+services:
+  maggies-mermaid-adventure:
+    build: .
+    container_name: maggies-mermaid-adventure
+    ports:
+      - "8081:80"
+    restart: unless-stopped
