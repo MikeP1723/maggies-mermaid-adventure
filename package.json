@@ -1,0 +1,7 @@
+{
+  "name": "maggies-mermaid-adventure",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node --test test/game.test.js"
+  }
+}

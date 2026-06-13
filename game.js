@@ -1076,7 +1076,7 @@ function resetGame() {
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
 function loop() {
-  requestAnimationFrame(loop);
+  requestAnimationFrame(loop); // eslint-disable-line no-undef
 
   drawBackground();
 
@@ -1117,3 +1117,33 @@ function loop() {
 }
 
 requestAnimationFrame(loop);
+
+// ─── Test exports (ignored by browsers, used by Jest) ─────────────────────────
+if (typeof module !== 'undefined') {
+  module.exports = {
+    // Pure / logic functions
+    rectsOverlap, attackHitbox, pressed,
+    spawnParticles, spawnEnemy,
+    playerUpdate, updateEnemies, updateDolphin, updateParticles,
+    resetGame, saveHighScore,
+    // Mutable state objects (exported by reference so tests can mutate them)
+    player, enemies, lasers, dolphin, particles, keys,
+    // Constant definitions
+    ENEMY_DEFS,
+    ATTACK_DURATION, ATTACK_REACH,
+    GRAVITY, SWIM_FORCE, MOVE_SPEED, SEAFLOOR,
+    // Let-variables exposed via getter/setter so tests can read and write them
+    get highScore()        { return highScore; },
+    set highScore(v)       { highScore = v; },
+    get gameState()        { return gameState; },
+    set gameState(v)       { gameState = v; },
+    get spawnInterval()    { return spawnInterval; },
+    set spawnInterval(v)   { spawnInterval = v; },
+    get difficultyTimer()  { return difficultyTimer; },
+    set difficultyTimer(v) { difficultyTimer = v; },
+    get enemySpawnTimer()  { return enemySpawnTimer; },
+    set enemySpawnTimer(v) { enemySpawnTimer = v; },
+    get camX()             { return camX; },
+    set camX(v)            { camX = v; },
+  };
+}
