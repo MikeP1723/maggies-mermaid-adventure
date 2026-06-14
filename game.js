@@ -388,9 +388,9 @@ function rectsOverlap(a, b) {
 const enemies = [];
 
 const ENEMY_DEFS = {
-  guppy:  { w: 26, h: 18, hp: 1, speed: 2.2, score: 100, flying: true  },
-  puffer: { w: 36, h: 30, hp: 4, speed: 0.8, score: 200, flying: false },
-  shark:  { w: 56, h: 34, hp: 3, speed: 1.5, score: 300, flying: false },
+  guppy:  { w: 26, h: 18, hp: 1, speed: 2.2, score: 100, flying: true,  swimMid: 80,  swimAmp: 80, swimRate: 0.50 },
+  puffer: { w: 36, h: 30, hp: 4, speed: 0.8, score: 200, flying: false, swimMid: 50,  swimAmp: 40, swimRate: 0.45 },
+  shark:  { w: 56, h: 34, hp: 3, speed: 1.5, score: 300, flying: false, swimMid: 90,  swimAmp: 65, swimRate: 0.30 },
 };
 
 let enemySpawnTimer = 0;
@@ -402,7 +402,7 @@ function spawnEnemy() {
   const type  = types[Math.floor(Math.random() * types.length)];
   const def   = ENEMY_DEFS[type];
   const spawnX = camX + W + 50;
-  const spawnY = def.flying ? SEAFLOOR - 60 - Math.random() * 120 : SEAFLOOR;
+  const spawnY = SEAFLOOR - def.swimMid;
 
   enemies.push({
     type, x: spawnX, y: spawnY,
@@ -444,13 +444,9 @@ function updateEnemies() {
     e.anim += 0.12;
     e.x    += e.vx;
 
-    if (e.flying) {
-      const targetY = SEAFLOOR - 80 - Math.sin(e.anim * 0.5) * 80;
-      e.y += (targetY - e.y) * 0.06;
-    } else {
-      if (e.y < SEAFLOOR) { e.vy += GRAVITY; e.y += e.vy; }
-      if (e.y >= SEAFLOOR) { e.y = SEAFLOOR; e.vy = 0; }
-    }
+    const def = ENEMY_DEFS[e.type];
+    const targetY = SEAFLOOR - def.swimMid - Math.sin(e.anim * def.swimRate) * def.swimAmp;
+    e.y += (targetY - e.y) * 0.05;
 
     if (e.type === 'shark') {
       e.shootCooldown--;
