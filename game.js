@@ -123,7 +123,68 @@ const sfx = {
   bossDefeat() {
     [392, 523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, duration: 0.18, type: 'square', volume: 0.16, delay: i * 0.08 }));
   },
+  powerUp() {
+    tone({ freq: 660, glideTo: 1320, duration: 0.18, type: 'triangle', volume: 0.16 });
+  },
 };
+
+// ─── Background music ─────────────────────────────────────────────────────────
+// A small step-sequencer looping over the same Web Audio primitives as the
+// SFX above — no audio file, consistent with the zero-dependency approach.
+// A sustained bass pad on a calm C–Am–F–G progression plus a sparse
+// pentatonic melody accent; respects the same mute toggle as the SFX.
+const MUSIC_BPM      = 80;
+const MUSIC_STEP_SEC = 60 / MUSIC_BPM / 2; // eighth-note step
+const MUSIC_STEPS    = 16;
+
+const MUSIC_BASS = [
+  { step: 0,  freq: 65.41,  dur: 3 }, // C2
+  { step: 4,  freq: 110.00, dur: 3 }, // A2
+  { step: 8,  freq: 87.31,  dur: 3 }, // F2
+  { step: 12, freq: 98.00,  dur: 3 }, // G2
+];
+const MUSIC_MELODY = [
+  { step: 2,  freq: 392.00, dur: 1.5 }, // G4
+  { step: 6,  freq: 440.00, dur: 1.5 }, // A4
+  { step: 10, freq: 349.23, dur: 1.5 }, // F4
+  { step: 14, freq: 329.63, dur: 1.5 }, // E4
+];
+
+let musicTimer = null;
+let musicStep  = 0;
+
+function musicNote(freq, durationSteps, type, volume) {
+  if (sfxMuted) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0       = ctx.currentTime;
+  const duration = durationSteps * MUSIC_STEP_SEC;
+  const osc  = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(volume, t0 + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.05);
+}
+
+function musicStepTick() {
+  MUSIC_BASS.forEach(n   => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'sine', 0.05); });
+  MUSIC_MELODY.forEach(n => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'triangle', 0.035); });
+  musicStep = (musicStep + 1) % MUSIC_STEPS;
+}
+
+// Scheduling the loop is harmless to start immediately: the AudioContext
+// stays 'suspended' (silent) until the player's first keypress/tap resumes
+// it, same as every other sound in this file.
+function startMusic() {
+  if (musicTimer) return;
+  musicStep = 0;
+  musicTimer = setInterval(musicStepTick, MUSIC_STEP_SEC * 1000);
+}
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 const LB_KEY = 'mma_leaderboard';
@@ -573,7 +634,7 @@ function playerUpdate() {
   if (pressed(['KeyZ', 'KeyX', 'Space']) && player.attackCooldown <= 0 && !player.attacking) {
     player.attacking = true;
     player.attackTimer = ATTACK_DURATION;
-    player.attackCooldown = ATTACK_COOLDOWN;
+    player.attackCooldown = currentAttackCooldown();
     spawnParticles(player.x + player.facing * 38, player.y - player.h * 0.55, 8);
     sfx.attack();
   }
@@ -639,6 +700,93 @@ function attackHitbox() {
 function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x &&
          a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ─── Powerups ─────────────────────────────────────────────────────────────────
+// Persistent-for-the-run upgrades to Maggie's attack, collected as drifting
+// world pickups. Base damage/cooldown stay untouched (and still exported as
+// ATTACK_COOLDOWN etc.) — attackDamage()/currentAttackCooldown() layer the
+// powerup bonus on top wherever an attack is thrown or resolved.
+const POWERUP_TYPES = {
+  damage: { color: '#ff6b9d', label: 'DMG', maxStacks: 3 },
+  speed:  { color: '#48cae4', label: 'SPD', maxStacks: 3 },
+};
+const POWERUP_SPAWN_INTERVAL = 480; // ~8s at 60fps — early enough to matter against the first few enemies
+
+const powerups = [];
+let powerupSpawnTimer = 0;
+let powerLevels = { damage: 0, speed: 0 };
+
+function attackDamage() { return 1 + powerLevels.damage; }
+function currentAttackCooldown() { return Math.max(10, ATTACK_COOLDOWN - powerLevels.speed * 6); }
+
+function spawnPowerup() {
+  const available = Object.keys(POWERUP_TYPES).filter(t => powerLevels[t] < POWERUP_TYPES[t].maxStacks);
+  if (available.length === 0) return; // fully powered up — nothing left to offer
+  const type = available[Math.floor(Math.random() * available.length)];
+  powerups.push({
+    type,
+    x: camX + W + 50,
+    y: SEAFLOOR - 60 - Math.random() * 120,
+    vx: -1.2,
+    anim: Math.random() * Math.PI * 2,
+  });
+}
+
+function collectPowerup(type) {
+  if (powerLevels[type] < POWERUP_TYPES[type].maxStacks) powerLevels[type]++;
+  player.score += 50;
+  spawnParticles(player.x, player.y - player.h / 2, 12);
+  sfx.powerUp();
+}
+
+function updatePowerups() {
+  powerupSpawnTimer++;
+  if (!boss && powerupSpawnTimer >= POWERUP_SPAWN_INTERVAL) {
+    powerupSpawnTimer = 0;
+    spawnPowerup();
+  }
+
+  const playerBox = { x: player.x - player.w / 2, y: player.y - player.h, w: player.w, h: player.h };
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const p = powerups[i];
+    p.x += p.vx;
+    p.anim += 0.06;
+    if (p.x < camX - 100) { powerups.splice(i, 1); continue; }
+    const pBox = { x: p.x - 12, y: p.y - 12, w: 24, h: 24 };
+    if (rectsOverlap(pBox, playerBox)) {
+      collectPowerup(p.type);
+      powerups.splice(i, 1);
+    }
+  }
+}
+
+function drawPowerups() {
+  powerups.forEach(p => {
+    const sx  = worldToScreen(p.x);
+    const bob = Math.sin(p.anim) * 4;
+    const def = POWERUP_TYPES[p.type];
+    ctx.save();
+    ctx.translate(sx, p.y + bob);
+    ctx.shadowColor = def.color;
+    ctx.shadowBlur  = 12;
+    ctx.fillStyle   = def.color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 8px "Courier New"';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.label, 0, 1);
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.restore();
+  });
 }
 
 // ─── Enemies ──────────────────────────────────────────────────────────────────
@@ -804,7 +952,7 @@ function updateEnemies() {
           spawnParticles(e.x, e.y - e.h / 2, 4);
           sfx.block();
         } else {
-          e.hp--;
+          e.hp -= attackDamage();
           e.hitTimer = 15;
           spawnParticles(e.x, e.y - e.h / 2, 6);
           sfx.hit();
@@ -856,6 +1004,7 @@ function startBossIntro() {
   enemies.length = 0;
   lasers.length = 0;
   bossTentacles.length = 0;
+  powerups.length = 0;
   boss = createBoss(LEVELS[level].boss);
   gameState = 'bossIntro';
   bossIntroTimer = BOSS_INTRO_DURATION;
@@ -945,7 +1094,7 @@ function updateBoss() {
 
   // Player's attack landing on the boss
   if (atk && rectsOverlap(atk, bossBox) && boss.hitTimer <= 0) {
-    boss.hp--;
+    boss.hp -= attackDamage();
     boss.hitTimer = 12;
     spawnParticles(boss.x, boss.y - boss.h / 2, 6);
     sfx.hit();
@@ -1194,20 +1343,23 @@ function drawPlayer() {
   ctx.arc(3, -49, 3, 0.2, Math.PI - 0.2);
   ctx.stroke();
 
-  // Attack bubble burst
+  // Attack bubble burst — color/size grow with the damage powerup level
   if (player.attacking) {
-    const progress = 1 - player.attackTimer / ATTACK_DURATION;
+    const progress   = 1 - player.attackTimer / ATTACK_DURATION;
+    const dmgLvl      = powerLevels.damage;
+    const arcColor    = ['#caf0f8', '#90e0ef', '#ff8fab', '#f7d76b'][dmgLvl] || C.attackArc;
+    const arcWidth    = 3 + dmgLvl;
+    const burstRadius = 48 + dmgLvl * 4 + progress * 18;
     ctx.globalAlpha = (1 - progress) * (flash ? 0.25 : 0.75);
-    ctx.strokeStyle = C.attackArc;
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = arcColor;
+    ctx.lineWidth = arcWidth;
     ctx.beginPath();
     ctx.arc(28, -50, 56, -Math.PI * 0.5, Math.PI * 0.4);
     ctx.stroke();
     for (let bi = 0; bi < 5; bi++) {
       const angle = (-0.5 + (bi / 4) * 0.9) * Math.PI;
-      const r = 48 + progress * 18;
       ctx.beginPath();
-      ctx.arc(28 + Math.cos(angle) * r, -50 + Math.sin(angle) * r, 3, 0, Math.PI * 2);
+      ctx.arc(28 + Math.cos(angle) * burstRadius, -50 + Math.sin(angle) * burstRadius, 3 + dmgLvl, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.globalAlpha = flash ? 0.4 : 1;
@@ -1799,6 +1951,19 @@ function drawHUD() {
     drawShell(14 + i * 24, 14, i < player.hp ? C.hpColor : '#1a3a5c');
   }
 
+  // Power-up levels, one line per stat, only shown once the player has picked one up
+  ctx.font = 'bold 11px "Courier New"';
+  ctx.textAlign = 'left';
+  let py = 40;
+  Object.keys(POWERUP_TYPES).forEach(type => {
+    const lvl = powerLevels[type];
+    if (lvl <= 0) return;
+    const def = POWERUP_TYPES[type];
+    ctx.fillStyle = def.color;
+    ctx.fillText(`${def.label} ${'●'.repeat(lvl)}${'○'.repeat(def.maxStacks - lvl)}`, 14, py);
+    py += 16;
+  });
+
   ctx.fillStyle = C.scoreText;
   ctx.font = 'bold 18px "Courier New"';
   ctx.textAlign = 'right';
@@ -2030,6 +2195,9 @@ function resetGame() {
   runEndReason = 'death';
   bossIntroTimer = 0;
   levelCompleteTimer = 0;
+  powerups.length = 0;
+  powerupSpawnTimer = 0;
+  powerLevels = { damage: 0, speed: 0 };
   gameState = 'playing';
   sfx.start();
 }
@@ -2083,6 +2251,7 @@ function loop() {
     } else {
       playerUpdate();
       updateEnemies(); // also drives any boss-summoned minions
+      updatePowerups();
       if (boss) {
         updateBoss();
       } else if (level < LEVELS.length && player.score >= LEVELS[level].scoreToBoss) {
@@ -2095,6 +2264,7 @@ function loop() {
 
   updateParticles();
   drawEnemies();
+  drawPowerups();
   drawBoss();
   drawPlayer();
   drawDolphin();
@@ -2122,6 +2292,13 @@ function loop() {
 
 requestAnimationFrame(loop);
 
+// Only start the real setInterval-driven music loop in an actual browser —
+// `module` only exists under Node/CommonJS (i.e. the test runner), and a
+// live interval there would keep the test process's event loop alive.
+if (typeof module === 'undefined') {
+  startMusic();
+}
+
 // ─── Test exports (ignored by browsers, used by Jest) ─────────────────────────
 if (typeof module !== 'undefined') {
   module.exports = {
@@ -2133,11 +2310,12 @@ if (typeof module !== 'undefined') {
     loadLeaderboard, addToLeaderboard, qualifiesForLeaderboard,
     toggleMute,
     createBoss, startBossIntro, defeatBoss, updateBoss, loop,
+    attackDamage, currentAttackCooldown, spawnPowerup, collectPowerup, updatePowerups,
     // Mutable state objects (exported by reference so tests can mutate them)
-    player, enemies, lasers, dolphin, particles, keys, bossTentacles,
+    player, enemies, lasers, dolphin, particles, keys, bossTentacles, powerups,
     // Constant definitions
-    ENEMY_DEFS, LEVELS, BOSS_DEFS,
-    ATTACK_DURATION, ATTACK_REACH,
+    ENEMY_DEFS, LEVELS, BOSS_DEFS, POWERUP_TYPES,
+    ATTACK_DURATION, ATTACK_REACH, ATTACK_COOLDOWN,
     GRAVITY, SWIM_FORCE, MOVE_SPEED, SEAFLOOR,
     // Let-variables exposed via getter/setter so tests can read and write them
     get highScore()        { return highScore; },
@@ -2168,5 +2346,9 @@ if (typeof module !== 'undefined') {
     set bossIntroTimer(v)   { bossIntroTimer = v; },
     get levelCompleteTimer(){ return levelCompleteTimer; },
     set levelCompleteTimer(v) { levelCompleteTimer = v; },
+    get powerLevels()       { return powerLevels; },
+    set powerLevels(v)      { powerLevels = v; },
+    get powerupSpawnTimer() { return powerupSpawnTimer; },
+    set powerupSpawnTimer(v){ powerupSpawnTimer = v; },
   };
 }

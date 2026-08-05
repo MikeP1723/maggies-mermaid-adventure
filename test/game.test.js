@@ -897,3 +897,140 @@ describe('resetGame: level/boss state', () => {
     expect(g.bossTentacles.length).toBe(0);
   });
 });
+
+// ─── Powerups ─────────────────────────────────────────────────────────────────
+
+describe('attackDamage / currentAttackCooldown', () => {
+  beforeEach(() => g.resetGame());
+
+  test('base damage is 1 with no powerups', () => {
+    expect(g.attackDamage()).toBe(1);
+  });
+
+  test('damage increases by 1 per damage powerup level', () => {
+    g.powerLevels = { damage: 2, speed: 0 };
+    expect(g.attackDamage()).toBe(3);
+  });
+
+  test('base attack cooldown matches ATTACK_COOLDOWN with no powerups', () => {
+    expect(g.currentAttackCooldown()).toBe(g.ATTACK_COOLDOWN);
+  });
+
+  test('cooldown shrinks with speed powerup levels', () => {
+    g.powerLevels = { damage: 0, speed: 1 };
+    expect(g.currentAttackCooldown()).toBeLessThan(g.ATTACK_COOLDOWN);
+  });
+
+  test('cooldown never drops below the 10-frame floor even at max speed stacks', () => {
+    g.powerLevels = { damage: 0, speed: g.POWERUP_TYPES.speed.maxStacks };
+    expect(g.currentAttackCooldown()).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe('spawnPowerup / collectPowerup', () => {
+  beforeEach(() => { g.resetGame(); });
+
+  test('spawnPowerup adds exactly one item to the world', () => {
+    expect(g.powerups.length).toBe(0);
+    g.spawnPowerup();
+    expect(g.powerups.length).toBe(1);
+  });
+
+  test('spawned powerup has a valid type and spawns beyond the right edge', () => {
+    g.camX = 0;
+    g.spawnPowerup();
+    const p = g.powerups[0];
+    expect(Object.keys(g.POWERUP_TYPES)).toContain(p.type);
+    expect(p.x).toBeGreaterThan(800);
+  });
+
+  test('spawnPowerup never offers a type that is already at its max stacks', (t) => {
+    g.powerLevels = { damage: g.POWERUP_TYPES.damage.maxStacks, speed: 0 };
+    t.mock.method(Math, 'random', () => 0); // would pick index 0 of whatever's available
+    g.spawnPowerup();
+    expect(g.powerups[0].type).toBe('speed');
+  });
+
+  test('spawnPowerup does nothing once every type is fully maxed', () => {
+    g.powerLevels = {
+      damage: g.POWERUP_TYPES.damage.maxStacks,
+      speed: g.POWERUP_TYPES.speed.maxStacks,
+    };
+    g.spawnPowerup();
+    expect(g.powerups.length).toBe(0);
+  });
+
+  test('collectPowerup increments the matching stat by one level', () => {
+    g.collectPowerup('damage');
+    expect(g.powerLevels.damage).toBe(1);
+  });
+
+  test('collectPowerup does not exceed maxStacks', () => {
+    g.powerLevels = { damage: g.POWERUP_TYPES.damage.maxStacks, speed: 0 };
+    g.collectPowerup('damage');
+    expect(g.powerLevels.damage).toBe(g.POWERUP_TYPES.damage.maxStacks);
+  });
+
+  test('collectPowerup awards a score bonus', () => {
+    const startScore = g.player.score;
+    g.collectPowerup('speed');
+    expect(g.player.score).toBeGreaterThan(startScore);
+  });
+});
+
+describe('updatePowerups', () => {
+  beforeEach(() => g.resetGame());
+
+  test('a powerup touching the player is collected and removed', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR;
+    g.powerups.push({ type: 'damage', x: 205, y: g.SEAFLOOR - 10, vx: -1.2, anim: 0 });
+    g.updatePowerups();
+    expect(g.powerLevels.damage).toBe(1);
+    expect(g.powerups.length).toBe(0);
+  });
+
+  test('a distant powerup is left untouched and keeps drifting left', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR;
+    g.powerups.push({ type: 'damage', x: 600, y: g.SEAFLOOR, vx: -1.2, anim: 0 });
+    g.updatePowerups();
+    expect(g.powerLevels.damage).toBe(0);
+    expect(g.powerups.length).toBe(1);
+    expect(g.powerups[0].x).toBeLessThan(600);
+  });
+
+  test('powerups that drift off the left edge of the world are removed', () => {
+    g.camX = 500;
+    g.powerups.push({ type: 'damage', x: 0, y: g.SEAFLOOR, vx: -1.2, anim: 0 });
+    g.updatePowerups();
+    expect(g.powerups.length).toBe(0);
+  });
+
+  test('spawning is suppressed while a boss is active', () => {
+    g.boss = g.createBoss('anglerfish');
+    g.powerupSpawnTimer = 99999;
+    g.updatePowerups();
+    expect(g.powerups.length).toBe(0);
+  });
+});
+
+describe('Powerups integrate with combat', () => {
+  beforeEach(() => g.resetGame());
+
+  test('a damage powerup makes attacks kill a multi-hit enemy faster', () => {
+    g.powerLevels = { damage: 2, speed: 0 }; // attackDamage() === 3
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = true;
+    const atk = g.attackHitbox();
+    const puffer = {
+      type: 'puffer', x: atk.x + atk.w / 2, y: g.SEAFLOOR,
+      w: g.ENEMY_DEFS.puffer.w, h: g.ENEMY_DEFS.puffer.h,
+      hp: g.ENEMY_DEFS.puffer.hp, maxHp: g.ENEMY_DEFS.puffer.hp,
+      speed: g.ENEMY_DEFS.puffer.speed, score: g.ENEMY_DEFS.puffer.score,
+      flying: false, vx: 0, vy: 0, anim: 0, hitTimer: 0, dead: false, deathTimer: 0,
+      shootCooldown: 0, swipeCooldown: 0, swipeTimer: 0, shielded: false, shieldCycle: 0,
+    };
+    g.enemies.push(puffer);
+    g.updateEnemies();
+    expect(puffer.hp).toBe(g.ENEMY_DEFS.puffer.hp - 3);
+  });
+});
