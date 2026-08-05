@@ -569,3 +569,27 @@ describe('Leaderboard', () => {
     expect(g.qualifiesForLeaderboard(150)).toBe(true);
   });
 });
+
+// ─── SFX mute toggle ──────────────────────────────────────────────────────────
+
+describe('toggleMute', () => {
+  beforeEach(() => { g.sfxMuted = false; localStorage.clear(); });
+
+  test('flips sfxMuted from false to true', () => {
+    g.toggleMute();
+    expect(g.sfxMuted).toBe(true);
+  });
+
+  test('flips back to false on a second call', () => {
+    g.toggleMute();
+    g.toggleMute();
+    expect(g.sfxMuted).toBe(false);
+  });
+
+  test('persists the muted state to localStorage', () => {
+    g.toggleMute();
+    expect(localStorage.getItem('mma_muted')).toBe('1');
+    g.toggleMute();
+    expect(localStorage.getItem('mma_muted')).toBe('0');
+  });
+});

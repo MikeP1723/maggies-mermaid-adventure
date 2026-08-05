@@ -19,6 +19,101 @@ function saveHighScore() {
   return false;
 }
 
+// ─── Audio / SFX ──────────────────────────────────────────────────────────────
+// Every sound is synthesized at runtime via the Web Audio API — no asset
+// files, matching the project's zero-dependency approach. Retro square/
+// triangle-wave beeps plus filtered noise bursts for percussive impacts.
+const MUTE_KEY = 'mma_muted';
+let sfxMuted = localStorage.getItem(MUTE_KEY) === '1';
+let audioCtx = null;
+
+function getAudioCtx() {
+  const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+  if (!AC) return null;
+  if (!audioCtx) audioCtx = new AC();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function toggleMute() {
+  sfxMuted = !sfxMuted;
+  localStorage.setItem(MUTE_KEY, sfxMuted ? '1' : '0');
+}
+
+// A single oscillator with an optional pitch glide and an exponential
+// decay envelope (silence-clamped so exponentialRamp never targets 0).
+function tone({ freq, glideTo, duration = 0.12, type = 'square', volume = 0.16, delay = 0 }) {
+  if (sfxMuted) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const osc  = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, t0 + duration);
+  gain.gain.setValueAtTime(volume, t0);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.02);
+}
+
+// A short burst of band-passed white noise — for hits/thuds/impacts.
+function noiseBurst({ duration = 0.12, filterFreq = 1200, volume = 0.2, delay = 0 }) {
+  if (sfxMuted) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const size = Math.ceil(ctx.sampleRate * duration);
+  const buffer = ctx.createBuffer(1, size, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < size; i++) data[i] = Math.random() * 2 - 1;
+
+  const noise  = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = filterFreq;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(volume, t0);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+  noise.connect(filter).connect(gain).connect(ctx.destination);
+  noise.start(t0);
+  noise.stop(t0 + duration + 0.02);
+}
+
+const sfx = {
+  attack() {
+    tone({ freq: 900, glideTo: 500, duration: 0.08, type: 'triangle', volume: 0.12 });
+  },
+  hit() {
+    noiseBurst({ duration: 0.07, filterFreq: 1800, volume: 0.2 });
+    tone({ freq: 220, glideTo: 120, duration: 0.08, type: 'square', volume: 0.09, delay: 0.01 });
+  },
+  enemyDeath() {
+    tone({ freq: 300, glideTo: 900, duration: 0.16, type: 'square', volume: 0.14 });
+  },
+  playerHurt() {
+    noiseBurst({ duration: 0.15, filterFreq: 500, volume: 0.22 });
+    tone({ freq: 180, glideTo: 80, duration: 0.18, type: 'sawtooth', volume: 0.12, delay: 0.02 });
+  },
+  playerDeath() {
+    tone({ freq: 400, glideTo: 50, duration: 0.6, type: 'sawtooth', volume: 0.16 });
+  },
+  start() {
+    tone({ freq: 440, duration: 0.1, type: 'square', volume: 0.13 });
+    tone({ freq: 660, duration: 0.14, type: 'square', volume: 0.13, delay: 0.09 });
+  },
+  leaderboardSave() {
+    [523, 659, 784].forEach((f, i) => tone({ freq: f, duration: 0.1, type: 'triangle', volume: 0.14, delay: i * 0.09 }));
+  },
+  highScore() {
+    [523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, duration: 0.14, type: 'square', volume: 0.15, delay: i * 0.09 }));
+  },
+};
+
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 const LB_KEY = 'mma_leaderboard';
 let inputName       = '';
@@ -36,6 +131,7 @@ function submitLeaderboardEntry() {
   leaderboardCache = loadLeaderboard();
   deadCooldown = 45;
   gameState = 'dead';
+  sfx.leaderboardSave();
   if (nameInput) {
     nameInput.style.display = 'none';
     nameInput.blur();
@@ -109,6 +205,7 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'KeyM' && !e.repeat) toggleMute();
   keys[e.code] = true;
   e.preventDefault();
 });
@@ -125,6 +222,22 @@ const TOUCH_BTNS = [
   { x: 606, y: 344, w: 82, h: 50, code: 'ArrowUp',    label: 'SWIM' },
   { x: 696, y: 344, w: 96, h: 50, code: 'Space',      label: 'ATK' },
 ];
+
+// Tappable mute toggle, top-right below the score/best-score readout —
+// desktop uses the 'M' key instead (see drawHUD).
+const MUTE_BTN = { x: W - 54, y: 60, w: 40, h: 26 };
+
+function touchesHitMuteBtn(touchList) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = W / rect.width;
+  const sy = H / rect.height;
+  return Array.from(touchList).some(t => {
+    const cx = (t.clientX - rect.left) * sx;
+    const cy = (t.clientY - rect.top) * sy;
+    return cx >= MUTE_BTN.x && cx <= MUTE_BTN.x + MUTE_BTN.w &&
+           cy >= MUTE_BTN.y && cy <= MUTE_BTN.y + MUTE_BTN.h;
+  });
+}
 
 function updateTouchKeys(e) {
   e.preventDefault();
@@ -143,9 +256,13 @@ function updateTouchKeys(e) {
   });
 }
 
-canvas.addEventListener('touchstart',  updateTouchKeys, { passive: false });
+canvas.addEventListener('touchstart',  e => {
+  if (touchesHitMuteBtn(e.touches)) { e.preventDefault(); return; }
+  updateTouchKeys(e);
+}, { passive: false });
 canvas.addEventListener('touchmove',   updateTouchKeys, { passive: false });
 canvas.addEventListener('touchend',    e => {
+  if (touchesHitMuteBtn(e.changedTouches)) { toggleMute(); e.preventDefault(); return; }
   if (gameState === 'enterName') {
     // A tap lands here only when it misses the overlaid name input (taps
     // that hit the input are consumed by it) — treat it as "done typing".
@@ -178,6 +295,22 @@ function drawTouchControls() {
     ctx.textBaseline = 'middle';
     ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
   });
+
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#03045e';
+  ctx.beginPath();
+  ctx.roundRect(MUTE_BTN.x, MUTE_BTN.y, MUTE_BTN.w, MUTE_BTN.h, 6);
+  ctx.fill();
+  ctx.strokeStyle = '#00b4d8';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = 'bold 10px "Courier New"';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(sfxMuted ? 'MUTE' : 'SFX', MUTE_BTN.x + MUTE_BTN.w / 2, MUTE_BTN.y + MUTE_BTN.h / 2);
+
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
   ctx.restore();
@@ -424,6 +557,7 @@ function playerUpdate() {
     player.attackTimer = ATTACK_DURATION;
     player.attackCooldown = ATTACK_COOLDOWN;
     spawnParticles(player.x + player.facing * 38, player.y - player.h * 0.55, 8);
+    sfx.attack();
   }
 
   if (player.attackCooldown > 0) player.attackCooldown--;
@@ -466,7 +600,8 @@ function playerUpdate() {
       player.invincible = 60;
       spawnParticles(player.x, player.y - player.h / 2, 6);
       lasers.splice(i, 1);
-      if (player.hp <= 0) player.dead = true;
+      if (player.hp <= 0) { player.dead = true; sfx.playerDeath(); }
+      else                { sfx.playerHurt(); }
     }
   }
 }
@@ -568,10 +703,12 @@ function updateEnemies() {
         e.hp--;
         e.hitTimer = 15;
         spawnParticles(e.x, e.y - e.h / 2, 6);
+        sfx.hit();
         if (e.hp <= 0) {
           e.dead = true;
           player.score += e.score;
           spawnParticles(e.x, e.y - e.h / 2, 14);
+          sfx.enemyDeath();
           continue;
         }
       }
@@ -584,7 +721,8 @@ function updateEnemies() {
         player.hp--;
         player.invincible = 60;
         spawnParticles(player.x, player.y - player.h / 2, 5);
-        if (player.hp <= 0) player.dead = true;
+        if (player.hp <= 0) { player.dead = true; sfx.playerDeath(); }
+        else                { sfx.playerHurt(); }
       }
     }
   }
@@ -1108,6 +1246,12 @@ function drawHUD() {
     ctx.font = '13px "Courier New"';
     ctx.fillText(`BEST ${highScore}`, W - 14, 50);
   }
+  if (!isTouchDevice()) {
+    // Touch devices get a tappable icon instead (see drawTouchControls / MUTE_BTN).
+    ctx.fillStyle = '#48cae4';
+    ctx.font = '11px "Courier New"';
+    ctx.fillText(sfxMuted ? 'SFX OFF (M)' : 'SFX ON (M)', W - 14, highScore > 0 ? 68 : 50);
+  }
   ctx.textAlign = 'left';
 }
 
@@ -1281,6 +1425,7 @@ function resetGame() {
   spawnInterval = 120;
   difficultyTimer = 0;
   gameState = 'playing';
+  sfx.start();
 }
 
 // ─── Main loop ────────────────────────────────────────────────────────────────
@@ -1302,7 +1447,10 @@ function loop() {
   if (gameState === 'playing') {
     if (player.dead) {
       restartTimer++;
-      if (restartTimer === 1) isNewHighScore = saveHighScore();
+      if (restartTimer === 1) {
+        isNewHighScore = saveHighScore();
+        if (isNewHighScore) sfx.highScore();
+      }
       if (restartTimer > 60) {
         restartTimer = 0;
         if (qualifiesForLeaderboard(player.score)) {
@@ -1353,6 +1501,7 @@ if (typeof module !== 'undefined') {
     playerUpdate, updateEnemies, updateDolphin, updateParticles,
     resetGame, saveHighScore,
     loadLeaderboard, addToLeaderboard, qualifiesForLeaderboard,
+    toggleMute,
     // Mutable state objects (exported by reference so tests can mutate them)
     player, enemies, lasers, dolphin, particles, keys,
     // Constant definitions
@@ -1376,5 +1525,7 @@ if (typeof module !== 'undefined') {
     set inputName(v)       { inputName = v; },
     get deadCooldown()     { return deadCooldown; },
     set deadCooldown(v)    { deadCooldown = v; },
+    get sfxMuted()          { return sfxMuted; },
+    set sfxMuted(v)         { sfxMuted = v; },
   };
 }
