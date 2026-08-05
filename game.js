@@ -138,16 +138,20 @@ const MUSIC_STEP_SEC = 60 / MUSIC_BPM / 2; // eighth-note step
 const MUSIC_STEPS    = 16;
 
 const MUSIC_BASS = [
-  { step: 0,  freq: 65.41,  dur: 3 }, // C2
-  { step: 4,  freq: 110.00, dur: 3 }, // A2
-  { step: 8,  freq: 87.31,  dur: 3 }, // F2
-  { step: 12, freq: 98.00,  dur: 3 }, // G2
+  { step: 0,  freq: 65.41,  dur: 1.8 }, // C2
+  { step: 2,  freq: 130.81, dur: 0.8 }, // C3 echo — gives the sustained root a pulse
+  { step: 4,  freq: 110.00, dur: 1.8 }, // A2
+  { step: 6,  freq: 220.00, dur: 0.8 }, // A3 echo
+  { step: 8,  freq: 87.31,  dur: 1.8 }, // F2
+  { step: 10, freq: 174.61, dur: 0.8 }, // F3 echo
+  { step: 12, freq: 98.00,  dur: 1.8 }, // G2
+  { step: 14, freq: 196.00, dur: 0.8 }, // G3 echo
 ];
 const MUSIC_MELODY = [
-  { step: 2,  freq: 392.00, dur: 1.5 }, // G4
-  { step: 6,  freq: 440.00, dur: 1.5 }, // A4
-  { step: 10, freq: 349.23, dur: 1.5 }, // F4
-  { step: 14, freq: 329.63, dur: 1.5 }, // E4
+  { step: 1,  freq: 392.00, dur: 1.5 }, // G4
+  { step: 5,  freq: 440.00, dur: 1.5 }, // A4
+  { step: 9,  freq: 349.23, dur: 1.5 }, // F4
+  { step: 13, freq: 329.63, dur: 1.5 }, // E4
 ];
 
 let musicTimer = null;
@@ -172,8 +176,8 @@ function musicNote(freq, durationSteps, type, volume) {
 }
 
 function musicStepTick() {
-  MUSIC_BASS.forEach(n   => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'sine', 0.05); });
-  MUSIC_MELODY.forEach(n => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'triangle', 0.035); });
+  MUSIC_BASS.forEach(n   => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'sine', 0.11); });
+  MUSIC_MELODY.forEach(n => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'triangle', 0.07); });
   musicStep = (musicStep + 1) % MUSIC_STEPS;
 }
 
@@ -261,6 +265,11 @@ function qualifiesForLeaderboard(score) {
 // ─── Input ────────────────────────────────────────────────────────────────────
 const keys = {};
 window.addEventListener('keydown', e => {
+  // Some browsers only honor AudioContext.resume() when it's called
+  // synchronously inside the actual gesture handler, not merely "sometime
+  // after" one happened (which is all sfx.*()/musicNote() calls do, since
+  // they run from inside the game loop's requestAnimationFrame callback).
+  getAudioCtx();
   if (gameState === 'enterName') {
     if (nameInput && e.target === nameInput) {
       // Native input owns typing/backspace here; only intercept Enter to submit.
@@ -329,6 +338,7 @@ function updateTouchKeys(e) {
 }
 
 canvas.addEventListener('touchstart',  e => {
+  getAudioCtx(); // see the keydown listener for why this must be synchronous, in-handler
   if (touchesHitMuteBtn(e.touches)) { e.preventDefault(); return; }
   updateTouchKeys(e);
 }, { passive: false });
