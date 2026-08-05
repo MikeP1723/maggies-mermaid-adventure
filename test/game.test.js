@@ -129,6 +129,11 @@ describe('ENEMY_DEFS', () => {
     const speeds = Object.values(g.ENEMY_DEFS).map(d => d.speed);
     expect(g.ENEMY_DEFS.guppy.speed).toBe(Math.max(...speeds));
   });
+
+  test('jellyfish is the slowest enemy, drifting rather than chasing', () => {
+    const speeds = Object.values(g.ENEMY_DEFS).map(d => d.speed);
+    expect(g.ENEMY_DEFS.jellyfish.speed).toBe(Math.min(...speeds));
+  });
 });
 
 // ─── spawnEnemy ───────────────────────────────────────────────────────────────
@@ -159,18 +164,35 @@ describe('spawnEnemy', () => {
   });
 
   test('shark spawns with a positive shoot cooldown', (t) => {
-    // Force shark spawn by making Math.random return 0.99 (last type)
-    t.mock.method(Math, 'random', () => 0.99);
+    // Force a shark spawn regardless of where 'shark' falls in ENEMY_DEFS's key order
+    const types = Object.keys(g.ENEMY_DEFS);
+    const sharkIndex = types.indexOf('shark');
+    t.mock.method(Math, 'random', () => (sharkIndex + 0.5) / types.length);
     g.spawnEnemy();
     const shark = g.enemies.find(e => e.type === 'shark');
-    if (shark) expect(shark.shootCooldown).toBeGreaterThan(0);
+    expect(shark).toBeDefined();
+    expect(shark.shootCooldown).toBeGreaterThan(0);
   });
 
   test('guppy spawns above the sea floor', (t) => {
-    t.mock.method(Math, 'random', () => 0); // first type = guppy
+    const types = Object.keys(g.ENEMY_DEFS);
+    const guppyIndex = types.indexOf('guppy');
+    t.mock.method(Math, 'random', () => guppyIndex / types.length); // force guppy
     g.spawnEnemy();
     const guppy = g.enemies.find(e => e.type === 'guppy');
-    if (guppy) expect(guppy.y).toBeLessThan(g.SEAFLOOR);
+    expect(guppy).toBeDefined();
+    expect(guppy.y).toBeLessThan(g.SEAFLOOR);
+  });
+
+  test('jellyfish spawns above the sea floor with a slow drift speed', (t) => {
+    const types = Object.keys(g.ENEMY_DEFS);
+    const jellyIndex = types.indexOf('jellyfish');
+    t.mock.method(Math, 'random', () => (jellyIndex + 0.5) / types.length);
+    g.spawnEnemy();
+    const jelly = g.enemies.find(e => e.type === 'jellyfish');
+    expect(jelly).toBeDefined();
+    expect(jelly.y).toBeLessThan(g.SEAFLOOR);
+    expect(jelly.speed).toBeLessThan(g.ENEMY_DEFS.puffer.speed);
   });
 });
 

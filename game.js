@@ -147,6 +147,7 @@ const C = {
   pufferBody: '#a8d5a2', pufferSpike: '#e9c46a',
   guppyBody: '#ff9f1c', guppyFin: '#ffbf69', guppyStripe: '#e76f51',
   sharkBody: '#5e6fa3', sharkBelly: '#d4e5f7', sharkEye: '#ff2222',
+  jellyBell: '#d8a1ff', jellyGlow: '#f3d9ff', jellyTentacle: '#b57edc',
   laserBeam: '#ff4444',
   attackArc: '#caf0f8',
   bubbleColors: ['#90e0ef', '#caf0f8', '#48cae4', '#00b4d8', '#ade8f4'],
@@ -438,9 +439,10 @@ function rectsOverlap(a, b) {
 const enemies = [];
 
 const ENEMY_DEFS = {
-  guppy:  { w: 26, h: 18, hp: 1, speed: 2.2, score: 100, flying: true,  swimMid: 80,  swimAmp: 80, swimRate: 0.50 },
-  puffer: { w: 36, h: 30, hp: 4, speed: 0.8, score: 200, flying: false, swimMid: 50,  swimAmp: 40, swimRate: 0.45 },
-  shark:  { w: 56, h: 34, hp: 3, speed: 1.5, score: 300, flying: false, swimMid: 90,  swimAmp: 65, swimRate: 0.30 },
+  guppy:     { w: 26, h: 18, hp: 1, speed: 2.2,  score: 100, flying: true,  swimMid: 80, swimAmp: 80, swimRate: 0.50 },
+  puffer:    { w: 36, h: 30, hp: 4, speed: 0.8,  score: 200, flying: false, swimMid: 50, swimAmp: 40, swimRate: 0.45 },
+  shark:     { w: 56, h: 34, hp: 3, speed: 1.5,  score: 300, flying: false, swimMid: 90, swimAmp: 65, swimRate: 0.30 },
+  jellyfish: { w: 30, h: 34, hp: 2, speed: 0.35, score: 150, flying: false, swimMid: 70, swimAmp: 22, swimRate: 0.18 },
 };
 
 let enemySpawnTimer = 0;
@@ -774,9 +776,10 @@ function drawEnemies() {
     }
 
     switch (e.type) {
-      case 'guppy':  drawGuppy(e);  break;
-      case 'puffer': drawPuffer(e); break;
-      case 'shark':  drawShark(e);  break;
+      case 'guppy':     drawGuppy(e);     break;
+      case 'puffer':    drawPuffer(e);    break;
+      case 'shark':     drawShark(e);     break;
+      case 'jellyfish': drawJellyfish(e); break;
     }
 
     ctx.filter = 'none';
@@ -988,6 +991,59 @@ function drawShark(e) {
   ctx.beginPath();
   ctx.arc(-17, -21 + bob, 1.2, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawJellyfish(e) {
+  const pulseT   = e.anim * 0.5;
+  const pulse    = Math.sin(pulseT);   // -1..1, drives the propulsion contraction
+  const bellW    = 15 - pulse * 2.5;
+  const bellH    = 13 + pulse * 3.5;
+  const glow     = 0.5 + pulse * 0.25;
+
+  ctx.save();
+
+  // Soft bioluminescent glow
+  ctx.shadowColor = C.jellyGlow;
+  ctx.shadowBlur  = 10 + glow * 8;
+
+  // Bell (dome)
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle   = C.jellyBell;
+  ctx.beginPath();
+  ctx.ellipse(0, -20, bellW, bellH, 0, Math.PI, 0);
+  ctx.quadraticCurveTo(bellW * 0.7, -20 + bellH * 0.7, 0, -20 + bellH * 0.55);
+  ctx.quadraticCurveTo(-bellW * 0.7, -20 + bellH * 0.7, -bellW, -20);
+  ctx.closePath();
+  ctx.fill();
+
+  // Inner glow core
+  ctx.globalAlpha = 0.5 + glow * 0.3;
+  ctx.fillStyle = C.jellyGlow;
+  ctx.beginPath();
+  ctx.ellipse(0, -21, bellW * 0.4, bellH * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+
+  // Trailing tentacles — each lags slightly for a gentle drifting wave
+  ctx.strokeStyle = C.jellyTentacle;
+  ctx.lineWidth   = 2;
+  ctx.lineCap     = 'round';
+  ctx.globalAlpha = 0.5;
+  const tentacleCount = 5;
+  for (let i = 0; i < tentacleCount; i++) {
+    const tx    = -bellW * 0.7 + (i / (tentacleCount - 1)) * bellW * 1.4;
+    const sway  = Math.sin(pulseT * 0.8 + i * 0.9) * 6;
+    const sway2 = Math.sin(pulseT * 0.8 + i * 0.9 + 1.2) * 9;
+    ctx.beginPath();
+    ctx.moveTo(tx, -14);
+    ctx.quadraticCurveTo(tx + sway, -2, tx + sway2, 14 + (i % 2) * 4);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 // ─── HUD ──────────────────────────────────────────────────────────────────────
