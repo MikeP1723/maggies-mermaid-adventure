@@ -116,6 +116,13 @@ const sfx = {
   highScore() {
     [523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, duration: 0.14, type: 'square', volume: 0.15, delay: i * 0.09 }));
   },
+  bossIntro() {
+    tone({ freq: 110, glideTo: 70, duration: 0.5, type: 'sawtooth', volume: 0.18 });
+    tone({ freq: 165, glideTo: 100, duration: 0.5, type: 'sawtooth', volume: 0.1, delay: 0.08 });
+  },
+  bossDefeat() {
+    [392, 523, 659, 784, 1047].forEach((f, i) => tone({ freq: f, duration: 0.18, type: 'square', volume: 0.16, delay: i * 0.08 }));
+  },
 };
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
@@ -333,6 +340,9 @@ const C = {
   sharkBody: '#5e6fa3', sharkBelly: '#d4e5f7', sharkEye: '#ff2222',
   jellyBell: '#d8a1ff', jellyGlow: '#f3d9ff', jellyTentacle: '#b57edc',
   crabBody: '#c1440e', crabShell: '#e76f51', crabClaw: '#f4a261', crabEye: '#2a1208', crabShield: '#7fdbff',
+  anglerBody: '#3d2645', anglerBelly: '#6b4570', anglerLure: '#f7d76b', anglerTeeth: '#fff',
+  krakenBody: '#4a1d6b', krakenTentacle: '#6a2c9c', krakenSucker: '#c084fc', krakenEye: '#ff6b9d',
+  leviBody: '#1a0f2e', leviFin: '#3d2260', leviEye: '#ff2222', leviTeeth: '#e8d5ff',
   laserBeam: '#ff4444',
   attackArc: '#caf0f8',
   bubbleColors: ['#90e0ef', '#caf0f8', '#48cae4', '#00b4d8', '#ade8f4'],
@@ -379,11 +389,14 @@ function updateParticles() {
 
 function drawParticles() {
   particles.forEach(p => {
+    // p.x is world-space (spawnParticles is always called with player.x/e.x/etc,
+    // never a pre-converted screen coordinate) — convert here like every other sprite.
+    const sx = worldToScreen(p.x);
     ctx.globalAlpha = p.life * 0.8;
     ctx.strokeStyle = p.color;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.arc(sx, p.y, p.r, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = p.life * 0.25;
     ctx.fillStyle = p.color;
@@ -581,20 +594,26 @@ function playerUpdate() {
   else                          { player.onGround = false; }
 
   if (player.x < camX + 30) player.x = camX + 30;
+  // Boss fights are arena-style: the camera freezes (see below) and the
+  // player is boxed in rather than able to swim off the frozen screen.
+  if (boss && player.x > camX + W - 40) player.x = camX + W - 40;
 
   const swimSpeed = pressed(['ArrowUp', 'KeyW']) ? 0.38 : (moving || !player.onGround) ? 0.28 : 0;
   if (swimSpeed > 0) player.tailAnim += swimSpeed;
   else               player.tailAnim *= 0.80;
 
-  const targetCam = player.x - W * 0.35;
-  camX += (targetCam - camX) * 0.1;
-  if (camX < 0) camX = 0;
+  if (!boss) {
+    const targetCam = player.x - W * 0.35;
+    camX += (targetCam - camX) * 0.1;
+    if (camX < 0) camX = 0;
+  }
 
   // Laser projectile update
   const playerBox = { x: player.x - player.w / 2, y: player.y - player.h, w: player.w, h: player.h };
   for (let i = lasers.length - 1; i >= 0; i--) {
     const l = lasers[i];
     l.x += l.vx;
+    l.y += l.vy || 0; // boss spread patterns fan vertically; regular shark lasers have no vy
     l.life--;
     if (l.life <= 0 || l.x + l.w < camX - 20 || l.x > camX + W + 20) {
       lasers.splice(i, 1);
@@ -649,7 +668,7 @@ let enemySpawnTimer = 0;
 let spawnInterval   = 120;
 let difficultyTimer = 0;
 
-function spawnEnemy() {
+function spawnEnemy(posOverride) {
   const types = Object.keys(ENEMY_DEFS);
   let type = types[Math.floor(Math.random() * types.length)];
   if (type === 'crab' && Math.random() > CRAB_STICK_CHANCE) {
@@ -657,8 +676,8 @@ function spawnEnemy() {
     type = commonTypes[Math.floor(Math.random() * commonTypes.length)];
   }
   const def   = ENEMY_DEFS[type];
-  const spawnX = camX + W + 50;
-  const spawnY = SEAFLOOR - def.swimMid;
+  const spawnX = posOverride ? posOverride.x : camX + W + 50;
+  const spawnY = posOverride ? posOverride.y : SEAFLOOR - def.swimMid;
 
   enemies.push({
     type, x: spawnX, y: spawnY,
@@ -678,12 +697,38 @@ function spawnEnemy() {
   });
 }
 
+// ─── Levels & bosses ──────────────────────────────────────────────────────────
+// A "level" is a cumulative player.score threshold; crossing it clears the
+// board and gates a boss fight. The camera freezes and regular spawning
+// pauses for the duration (see the `boss` checks in playerUpdate/updateEnemies).
+const LEVELS = [
+  { name: 'Coral Shallows', scoreToBoss: 1200, boss: 'anglerfish' },
+  { name: 'Kelp Forest',    scoreToBoss: 3200, boss: 'kraken'     },
+  { name: 'Abyssal Trench', scoreToBoss: 6000, boss: 'leviathan'  },
+];
+
+const BOSS_DEFS = {
+  anglerfish: { hp: 20, w: 70,  h: 50, name: 'Gloom the Anglerfish', scoreBonus: 600  },
+  kraken:     { hp: 32, w: 90,  h: 70, name: 'The Kraken',           scoreBonus: 900  },
+  leviathan:  { hp: 45, w: 100, h: 60, name: 'The Abyss Mother',     scoreBonus: 1400 },
+};
+
+const BOSS_INTRO_DURATION     = 110;
+const LEVEL_COMPLETE_DURATION = 100;
+
+let level             = 0;      // index into LEVELS — the level currently in progress
+let boss              = null;   // single active boss object, separate from `enemies`
+let runEndReason       = 'death'; // 'death' | 'victory' — which end-of-run screen to show
+let bossIntroTimer     = 0;
+let levelCompleteTimer = 0;
+const bossTentacles    = [];    // Kraken-only telegraphed floor hitboxes
+
 function updateEnemies() {
   difficultyTimer++;
   if (difficultyTimer % 600 === 0) spawnInterval = Math.max(40, spawnInterval - 8);
 
   enemySpawnTimer++;
-  if (enemySpawnTimer >= spawnInterval) {
+  if (!boss && enemySpawnTimer >= spawnInterval) {
     enemySpawnTimer = 0;
     spawnEnemy();
     if (Math.random() < 0.3) spawnEnemy();
@@ -786,6 +831,170 @@ function updateEnemies() {
       }
     }
   }
+}
+
+// ─── Boss fights ──────────────────────────────────────────────────────────────
+function createBoss(type) {
+  const def = BOSS_DEFS[type];
+  return {
+    type, name: def.name,
+    hp: def.hp, maxHp: def.hp, scoreBonus: def.scoreBonus,
+    w: def.w, h: def.h,
+    x: camX + W - 130,
+    y: SEAFLOOR - def.h / 2 - 30,
+    anim: 0,
+    hitTimer: 0,
+    attackCooldown: 90,      // frames until the first attack, once the fight goes live
+    dashTelegraph: 0,        // >0 while rearing back before a dash
+    dashTimer: 0,            // >0 while actively dashing
+    dashVX: 0,
+    summonCooldown: 200,
+  };
+}
+
+function startBossIntro() {
+  enemies.length = 0;
+  lasers.length = 0;
+  bossTentacles.length = 0;
+  boss = createBoss(LEVELS[level].boss);
+  gameState = 'bossIntro';
+  bossIntroTimer = BOSS_INTRO_DURATION;
+  sfx.bossIntro();
+}
+
+function defeatBoss() {
+  spawnParticles(boss.x, boss.y - boss.h / 2, 24);
+  player.score += boss.scoreBonus;
+  sfx.bossDefeat();
+  boss = null;
+  bossTentacles.length = 0;
+  enemies.length = 0; // leftover summoned minions don't carry into the next level
+  lasers.length = 0;
+  level++;
+  if (level >= LEVELS.length) {
+    // Funnels into the existing death → leaderboard → restart pipeline;
+    // drawDeathScreen() branches its messaging on runEndReason.
+    runEndReason = 'victory';
+    player.dead = true;
+  } else {
+    gameState = 'levelComplete';
+    levelCompleteTimer = LEVEL_COMPLETE_DURATION;
+    spawnInterval = Math.max(40, spawnInterval - 20); // discrete jump on top of the gradual ramp
+  }
+}
+
+// Idle animation/positioning runs every frame the boss exists, independent
+// of gameState, so it keeps bobbing during the intro/level-complete banners.
+function updateBossIdle() {
+  if (!boss) return;
+  boss.anim += 0.08;
+  boss.y = SEAFLOOR - boss.h / 2 - 30 + Math.sin(boss.anim) * 10;
+}
+
+function bossFireSpread(vyList, color, speed) {
+  vyList.forEach(vy => {
+    lasers.push({ x: boss.x - boss.w / 2, y: boss.y - boss.h * 0.5, vx: -speed, vy, w: 16, h: 16, life: 140, color });
+  });
+}
+
+function bossLungeDash() {
+  boss.dashTelegraph = 30;
+}
+
+const TENTACLE_TELEGRAPH = 45;
+const TENTACLE_ACTIVE    = 25;
+
+function spawnTentacle() {
+  const arenaLeft  = camX + 40;
+  const arenaRight = camX + W - 40;
+  bossTentacles.push({ x: arenaLeft + Math.random() * (arenaRight - arenaLeft), telegraphTimer: TENTACLE_TELEGRAPH, activeTimer: 0 });
+}
+
+function updateTentacles() {
+  const playerBox = { x: player.x - player.w / 2, y: player.y - player.h, w: player.w, h: player.h };
+  for (let i = bossTentacles.length - 1; i >= 0; i--) {
+    const t = bossTentacles[i];
+    if (t.telegraphTimer > 0) {
+      t.telegraphTimer--;
+      if (t.telegraphTimer === 0) t.activeTimer = TENTACLE_ACTIVE;
+      continue;
+    }
+    if (t.activeTimer > 0) {
+      t.activeTimer--;
+      const tBox = { x: t.x - 18, y: SEAFLOOR - 90, w: 36, h: 90 };
+      if (player.invincible <= 0 && rectsOverlap(tBox, playerBox)) {
+        player.hp--;
+        player.invincible = 60;
+        spawnParticles(player.x, player.y - player.h / 2, 6);
+        if (player.hp <= 0) { player.dead = true; sfx.playerDeath(); }
+        else                { sfx.playerHurt(); }
+      }
+      if (t.activeTimer <= 0) bossTentacles.splice(i, 1);
+    }
+  }
+}
+
+function summonMinion() {
+  spawnEnemy({ x: boss.x - 80, y: SEAFLOOR - 60 });
+}
+
+function updateBoss() {
+  const atk      = player.attacking ? attackHitbox() : null;
+  const bossBox  = { x: boss.x - boss.w / 2, y: boss.y - boss.h, w: boss.w, h: boss.h };
+  const playerBox = { x: player.x - player.w / 2, y: player.y - player.h, w: player.w, h: player.h };
+
+  // Player's attack landing on the boss
+  if (atk && rectsOverlap(atk, bossBox) && boss.hitTimer <= 0) {
+    boss.hp--;
+    boss.hitTimer = 12;
+    spawnParticles(boss.x, boss.y - boss.h / 2, 6);
+    sfx.hit();
+    if (boss.hp <= 0) { defeatBoss(); return; }
+  }
+  if (boss.hitTimer > 0) boss.hitTimer--;
+
+  // Boss body touching the player (includes ramming damage during a dash)
+  if (player.invincible <= 0 && rectsOverlap(playerBox, bossBox)) {
+    player.hp--;
+    player.invincible = 60;
+    spawnParticles(player.x, player.y - player.h / 2, 6);
+    if (player.hp <= 0) { player.dead = true; sfx.playerDeath(); }
+    else                { sfx.playerHurt(); }
+  }
+
+  // Dash telegraph/movement
+  if (boss.dashTelegraph > 0) {
+    boss.dashTelegraph--;
+    if (boss.dashTelegraph === 0) {
+      boss.dashTimer = 20;
+      boss.dashVX = player.x < boss.x ? -14 : 14;
+    }
+  } else if (boss.dashTimer > 0) {
+    boss.x += boss.dashVX;
+    boss.dashTimer--;
+  } else {
+    const homeX = camX + W - 130;
+    boss.x += (homeX - boss.x) * 0.02;
+  }
+
+  // Pick the next attack once cooldown expires and the boss isn't mid-dash
+  boss.attackCooldown--;
+  if (boss.attackCooldown <= 0 && boss.dashTimer <= 0 && boss.dashTelegraph <= 0) {
+    if (boss.type === 'anglerfish') {
+      if (Math.random() < 0.5) { bossFireSpread([-2, 0, 2], '#f7d76b', 5); boss.attackCooldown = 130; }
+      else                     { bossLungeDash(); boss.attackCooldown = 220; }
+    } else if (boss.type === 'kraken') {
+      if (Math.random() < 0.5) { spawnTentacle(); boss.attackCooldown = 140; }
+      else                     { bossFireSpread([-1.5, 1.5], '#7b2cbf', 3); boss.attackCooldown = 170; }
+    } else if (boss.type === 'leviathan') {
+      const roll = Math.random();
+      if (roll < 0.4)        { bossFireSpread([-3, -1, 1, 3], '#ff4d6d', 6); boss.attackCooldown = 110; }
+      else if (roll < 0.75)  { bossLungeDash(); boss.attackCooldown = 180; }
+      else                   { summonMinion(); boss.attackCooldown = 200; }
+    }
+  }
+
+  updateTentacles();
 }
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
@@ -1043,14 +1252,15 @@ function drawEnemies() {
     ctx.restore();
   });
 
-  // Draw laser projectiles
+  // Draw laser / boss projectiles
   lasers.forEach(l => {
     const sx = worldToScreen(l.x);
+    const color = l.color || C.laserBeam;
     ctx.save();
     ctx.globalAlpha = Math.min(1, l.life / 20);
-    ctx.shadowColor  = C.laserBeam;
+    ctx.shadowColor  = color;
     ctx.shadowBlur   = 10;
-    ctx.fillStyle    = C.laserBeam;
+    ctx.fillStyle    = color;
     ctx.fillRect(sx, l.y, l.w, l.h);
     ctx.shadowBlur   = 3;
     ctx.fillStyle    = '#fff';
@@ -1368,6 +1578,221 @@ function drawCrab(e) {
   }
 }
 
+// ─── Boss drawing ─────────────────────────────────────────────────────────────
+function drawAnglerfish(b) {
+  const bob     = Math.sin(b.anim * 0.7) * 5;
+  const lureBob = Math.sin(b.anim * 1.3) * 6;
+
+  // Body
+  ctx.fillStyle = C.anglerBody;
+  ctx.beginPath();
+  ctx.ellipse(10, -20 + bob, 34, 22, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Belly
+  ctx.fillStyle = C.anglerBelly;
+  ctx.beginPath();
+  ctx.ellipse(14, -12 + bob, 22, 10, 0.1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Tail fin
+  ctx.fillStyle = C.anglerBody;
+  ctx.beginPath();
+  ctx.moveTo(40, -20 + bob);
+  ctx.bezierCurveTo(58, -34 + bob, 62, -6 + bob, 40, -20 + bob);
+  ctx.fill();
+
+  // Lure stalk + glowing orb
+  ctx.strokeStyle = C.anglerBody;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-16, -38 + bob);
+  ctx.quadraticCurveTo(-34, -50 + bob, -30, -62 + bob + lureBob);
+  ctx.stroke();
+  ctx.shadowColor = C.anglerLure;
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = C.anglerLure;
+  ctx.beginPath();
+  ctx.arc(-30, -62 + bob + lureBob, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Mouth + teeth
+  const mouthOpen = 8 + Math.sin(b.anim * 0.6) * 4;
+  ctx.fillStyle = '#160a1c';
+  ctx.beginPath();
+  ctx.moveTo(-24, -22 + bob);
+  ctx.quadraticCurveTo(-30, -14 + bob, -20, -6 + bob + mouthOpen * 0.6);
+  ctx.lineTo(0, -4 + bob + mouthOpen * 0.4);
+  ctx.quadraticCurveTo(-10, -18 + bob, -24, -22 + bob);
+  ctx.fill();
+  ctx.fillStyle = C.anglerTeeth;
+  for (let i = 0; i < 5; i++) {
+    const tx = -22 + i * 5;
+    ctx.beginPath();
+    ctx.moveTo(tx, -20 + bob);
+    ctx.lineTo(tx + 1.5, -13 + bob);
+    ctx.lineTo(tx + 3, -20 + bob);
+    ctx.fill();
+  }
+
+  // Eye
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(-14, -30 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(-13, -30 + bob, 1.8, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawKraken(b) {
+  const bob = Math.sin(b.anim * 0.5) * 4;
+
+  // Tentacles (drawn behind the mantle), each with a wavy curl and a sucker
+  ctx.strokeStyle = C.krakenTentacle;
+  ctx.lineWidth = 8;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 5; i++) {
+    const tx   = -30 + i * 16;
+    const wave = Math.sin(b.anim * 1.2 + i) * 14;
+    ctx.beginPath();
+    ctx.moveTo(tx, -10 + bob);
+    ctx.quadraticCurveTo(tx + wave, 20 + bob, tx + wave * 1.4, 44 + bob);
+    ctx.stroke();
+    ctx.fillStyle = C.krakenSucker;
+    ctx.beginPath();
+    ctx.arc(tx + wave * 0.8, 20 + bob, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.lineCap = 'butt';
+
+  // Mantle
+  ctx.fillStyle = C.krakenBody;
+  ctx.beginPath();
+  ctx.ellipse(0, -25 + bob, 38, 30, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  [-14, 14].forEach(ex => {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(ex, -28 + bob, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.krakenEye;
+    ctx.beginPath(); ctx.arc(ex, -28 + bob, 4, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+function drawLeviathan(b) {
+  const bob     = Math.sin(b.anim * 0.5) * 4;
+  const tailWag = Math.sin(b.anim * 1.1) * 14;
+
+  // Tail
+  ctx.fillStyle = C.leviBody;
+  ctx.beginPath();
+  ctx.moveTo(34, -22 + bob);
+  ctx.bezierCurveTo(50, -40 + tailWag, 60, -20 + tailWag, 44, -22 + bob);
+  ctx.bezierCurveTo(60, -4 + tailWag * 0.6, 50, -2 + tailWag, 34, -22 + bob);
+  ctx.fill();
+
+  // Body — head faces left
+  ctx.fillStyle = C.leviBody;
+  ctx.beginPath();
+  ctx.moveTo(34, -14 + bob);
+  ctx.bezierCurveTo(14, -38 + bob, -20, -42 + bob, -40, -32 + bob);
+  ctx.bezierCurveTo(-50, -24 + bob, -50, -12 + bob, -40, -8 + bob);
+  ctx.bezierCurveTo(-20, -2 + bob, 14, -2 + bob, 34, -14 + bob);
+  ctx.fill();
+
+  // Dorsal fin
+  ctx.fillStyle = C.leviFin;
+  ctx.beginPath();
+  ctx.moveTo(0, -38 + bob); ctx.lineTo(-10, -58 + bob); ctx.lineTo(-22, -38 + bob);
+  ctx.fill();
+
+  // Teeth
+  ctx.fillStyle = C.leviTeeth;
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-30 - i * 3, -24 + bob);
+    ctx.lineTo(-31 - i * 3, -18 + bob);
+    ctx.lineTo(-32 - i * 3, -24 + bob);
+    ctx.fill();
+  }
+
+  // Glowing eye
+  ctx.shadowColor = C.leviEye;
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = C.leviEye;
+  ctx.beginPath(); ctx.arc(-26, -28 + bob, 4.5, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawTentacleTelegraphs() {
+  bossTentacles.forEach(t => {
+    const sx = worldToScreen(t.x);
+    if (t.telegraphTimer > 0) {
+      const pulse = 1 - t.telegraphTimer / TENTACLE_TELEGRAPH;
+      ctx.strokeStyle = C.krakenEye;
+      ctx.globalAlpha = 0.4 + pulse * 0.4;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx - 18, SEAFLOOR);
+      ctx.lineTo(sx + 18, SEAFLOOR);
+      ctx.moveTo(sx, SEAFLOOR);
+      ctx.lineTo(sx, SEAFLOOR - 90 * pulse);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (t.activeTimer > 0) {
+      const wave = Math.sin(Date.now() / 60 + sx) * 8;
+      ctx.strokeStyle = C.krakenTentacle;
+      ctx.lineWidth = 10;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(sx, SEAFLOOR + 4);
+      ctx.quadraticCurveTo(sx + wave, SEAFLOOR - 45, sx + wave * 1.3, SEAFLOOR - 90);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.fillStyle = C.krakenSucker;
+      ctx.beginPath();
+      ctx.arc(sx + wave * 1.3, SEAFLOOR - 90, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+}
+
+function drawBoss() {
+  if (!boss) return;
+  const sx    = worldToScreen(boss.x);
+  const flash = boss.hitTimer > 0 && Math.floor(boss.hitTimer / 3) % 2 === 0;
+
+  ctx.save();
+  ctx.translate(sx, boss.y);
+  if (flash) ctx.filter = 'brightness(3)';
+
+  if (boss.type === 'anglerfish')     drawAnglerfish(boss);
+  else if (boss.type === 'kraken')    drawKraken(boss);
+  else if (boss.type === 'leviathan') drawLeviathan(boss);
+
+  ctx.filter = 'none';
+  ctx.restore();
+
+  drawTentacleTelegraphs();
+}
+
+function drawBossBar() {
+  if (!boss) return;
+  const barX = 120, barY = 12, barW = W - 210, barH = 14;
+  ctx.fillStyle = '#001233';
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.fillStyle = '#ff4d6d';
+  ctx.fillRect(barX, barY, barW * Math.max(0, boss.hp / boss.maxHp), barH);
+  ctx.strokeStyle = '#caf0f8';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(barX, barY, barW, barH);
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = 'bold 11px "Courier New"';
+  ctx.textAlign = 'center';
+  ctx.fillText(boss.name, barX + barW / 2, barY + barH + 14);
+  ctx.textAlign = 'left';
+}
+
 // ─── HUD ──────────────────────────────────────────────────────────────────────
 function drawHUD() {
   for (let i = 0; i < player.maxHp; i++) {
@@ -1499,16 +1924,17 @@ function drawDeathScreen() {
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center';
 
-  ctx.fillStyle = '#ff6b9d';
-  ctx.font = 'bold 28px "Courier New"';
-  ctx.fillText('MAGGIE SWAM AWAY...', W / 2, 46);
+  const victory = runEndReason === 'victory';
+  const pulse = 0.75 + 0.25 * Math.sin(Date.now() / 150);
+  ctx.fillStyle = victory ? `rgba(247,215,107,${pulse})` : '#ff6b9d';
+  ctx.font = 'bold 26px "Courier New"';
+  ctx.fillText(victory ? 'YOU SAVED THE REEF!' : 'MAGGIE SWAM AWAY...', W / 2, 46);
 
   ctx.fillStyle = '#caf0f8';
   ctx.font = '18px "Courier New"';
   ctx.fillText(`Score: ${player.score}`, W / 2, 76);
 
   if (isNewHighScore) {
-    const pulse = 0.75 + 0.25 * Math.sin(Date.now() / 150);
     ctx.fillStyle = `rgba(247,215,107,${pulse})`;
     ctx.font = 'bold 16px "Courier New"';
     ctx.fillText('~ NEW HIGH SCORE! ~', W / 2, 100);
@@ -1541,6 +1967,43 @@ function drawDeathScreen() {
   ctx.textAlign = 'left';
 }
 
+function drawBossIntroScreen() {
+  if (!boss) return;
+  ctx.fillStyle = 'rgba(2,13,26,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 130);
+  ctx.fillStyle = `rgba(255,107,157,${pulse})`;
+  ctx.font = 'bold 20px "Courier New"';
+  ctx.fillText(`LEVEL ${level + 1}: ${LEVELS[level].name.toUpperCase()}`, W / 2, H / 2 - 30);
+
+  ctx.fillStyle = '#f7d76b';
+  ctx.font = 'bold 30px "Courier New"';
+  ctx.fillText(boss.name.toUpperCase(), W / 2, H / 2 + 10);
+
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = '14px "Courier New"';
+  ctx.fillText('Brace yourself...', W / 2, H / 2 + 40);
+  ctx.textAlign = 'left';
+}
+
+function drawLevelCompleteScreen() {
+  ctx.fillStyle = 'rgba(2,13,26,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  const pulse = 0.75 + 0.25 * Math.sin(Date.now() / 150);
+  ctx.fillStyle = `rgba(144,224,239,${pulse})`;
+  ctx.font = 'bold 26px "Courier New"';
+  ctx.fillText(`LEVEL ${level} CLEAR!`, W / 2, H / 2 - 10);
+
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = '14px "Courier New"';
+  ctx.fillText(`Entering ${LEVELS[level] ? LEVELS[level].name : 'deeper waters'}...`, W / 2, H / 2 + 20);
+  ctx.textAlign = 'left';
+}
+
 function resetGame() {
   player.x = 120; player.y = SEAFLOOR;
   player.vx = 0;  player.vy = 0;
@@ -1561,6 +2024,12 @@ function resetGame() {
   enemySpawnTimer = 0;
   spawnInterval = 120;
   difficultyTimer = 0;
+  level = 0;
+  boss = null;
+  bossTentacles.length = 0;
+  runEndReason = 'death';
+  bossIntroTimer = 0;
+  levelCompleteTimer = 0;
   gameState = 'playing';
   sfx.start();
 }
@@ -1579,6 +2048,19 @@ function loop() {
     drawStartScreen();
     if (pressed(['Enter', 'KeyZ'])) resetGame();
     return;
+  }
+
+  if (gameState === 'bossIntro') {
+    updateDolphin();
+    updateBossIdle();
+    bossIntroTimer--;
+    if (bossIntroTimer <= 0) gameState = 'playing';
+  }
+
+  if (gameState === 'levelComplete') {
+    updateDolphin();
+    levelCompleteTimer--;
+    if (levelCompleteTimer <= 0) gameState = 'playing';
   }
 
   if (gameState === 'playing') {
@@ -1600,18 +2082,29 @@ function loop() {
       }
     } else {
       playerUpdate();
-      updateEnemies();
+      updateEnemies(); // also drives any boss-summoned minions
+      if (boss) {
+        updateBoss();
+      } else if (level < LEVELS.length && player.score >= LEVELS[level].scoreToBoss) {
+        startBossIntro();
+      }
     }
     updateDolphin();
+    updateBossIdle();
   }
 
   updateParticles();
   drawEnemies();
+  drawBoss();
   drawPlayer();
   drawDolphin();
   drawParticles();
   drawHUD();
+  drawBossBar();
   drawTouchControls();
+
+  if (gameState === 'bossIntro') drawBossIntroScreen();
+  if (gameState === 'levelComplete') drawLevelCompleteScreen();
 
   if (gameState === 'dead') {
     if (deadCooldown > 0) deadCooldown--;
@@ -1639,10 +2132,11 @@ if (typeof module !== 'undefined') {
     resetGame, saveHighScore,
     loadLeaderboard, addToLeaderboard, qualifiesForLeaderboard,
     toggleMute,
+    createBoss, startBossIntro, defeatBoss, updateBoss, loop,
     // Mutable state objects (exported by reference so tests can mutate them)
-    player, enemies, lasers, dolphin, particles, keys,
+    player, enemies, lasers, dolphin, particles, keys, bossTentacles,
     // Constant definitions
-    ENEMY_DEFS,
+    ENEMY_DEFS, LEVELS, BOSS_DEFS,
     ATTACK_DURATION, ATTACK_REACH,
     GRAVITY, SWIM_FORCE, MOVE_SPEED, SEAFLOOR,
     // Let-variables exposed via getter/setter so tests can read and write them
@@ -1664,5 +2158,15 @@ if (typeof module !== 'undefined') {
     set deadCooldown(v)    { deadCooldown = v; },
     get sfxMuted()          { return sfxMuted; },
     set sfxMuted(v)         { sfxMuted = v; },
+    get level()             { return level; },
+    set level(v)            { level = v; },
+    get boss()              { return boss; },
+    set boss(v)             { boss = v; },
+    get runEndReason()      { return runEndReason; },
+    set runEndReason(v)     { runEndReason = v; },
+    get bossIntroTimer()    { return bossIntroTimer; },
+    set bossIntroTimer(v)   { bossIntroTimer = v; },
+    get levelCompleteTimer(){ return levelCompleteTimer; },
+    set levelCompleteTimer(v) { levelCompleteTimer = v; },
   };
 }

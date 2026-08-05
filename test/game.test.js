@@ -698,3 +698,202 @@ describe('toggleMute', () => {
     expect(localStorage.getItem('mma_muted')).toBe('0');
   });
 });
+
+// ─── Levels & bosses ────────────────────────────────────────────────────────
+
+describe('LEVELS / BOSS_DEFS data', () => {
+  test('scoreToBoss thresholds strictly increase', () => {
+    for (let i = 1; i < g.LEVELS.length; i++) {
+      expect(g.LEVELS[i].scoreToBoss).toBeGreaterThan(g.LEVELS[i - 1].scoreToBoss);
+    }
+  });
+
+  test('every level\'s boss key resolves in BOSS_DEFS', () => {
+    g.LEVELS.forEach(lvl => {
+      expect(g.BOSS_DEFS[lvl.boss]).toBeDefined();
+    });
+  });
+
+  test('at least 3 levels are defined', () => {
+    expect(g.LEVELS.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('startBossIntro / createBoss', () => {
+  beforeEach(() => { g.resetGame(); g.enemies.length = 0; g.lasers.length = 0; });
+
+  test('creates a boss matching the current level\'s def', () => {
+    g.level = 0;
+    g.startBossIntro();
+    expect(g.boss).toBeDefined();
+    expect(g.boss.type).toBe(g.LEVELS[0].boss);
+    expect(g.boss.hp).toBe(g.BOSS_DEFS[g.LEVELS[0].boss].hp);
+    expect(g.boss.maxHp).toBe(g.boss.hp);
+  });
+
+  test('sets gameState to bossIntro', () => {
+    g.startBossIntro();
+    expect(g.gameState).toBe('bossIntro');
+  });
+
+  test('clears any leftover regular enemies and lasers', () => {
+    g.enemies.push({ type: 'guppy' });
+    g.lasers.push({ x: 0 });
+    g.startBossIntro();
+    expect(g.enemies.length).toBe(0);
+    expect(g.lasers.length).toBe(0);
+  });
+});
+
+describe('Score-threshold trigger (via loop())', () => {
+  beforeEach(() => { g.resetGame(); });
+
+  test('crossing a level\'s scoreToBoss transitions playing -> bossIntro', () => {
+    g.gameState = 'playing';
+    g.player.score = g.LEVELS[0].scoreToBoss;
+    g.loop();
+    expect(g.gameState).toBe('bossIntro');
+    expect(g.boss).toBeDefined();
+    expect(g.boss.type).toBe(g.LEVELS[0].boss);
+  });
+
+  test('does not trigger before the threshold is reached', () => {
+    g.gameState = 'playing';
+    g.player.score = g.LEVELS[0].scoreToBoss - 1;
+    g.loop();
+    expect(g.gameState).toBe('playing');
+    expect(g.boss).toBe(null);
+  });
+});
+
+describe('Boss arena: camera freeze and spawn gating', () => {
+  beforeEach(() => { g.resetGame(); });
+
+  test('camX does not move while a boss is active, even as the player moves', () => {
+    g.boss = g.createBoss(g.LEVELS[0].boss);
+    g.camX = 200;
+    g.player.x = 400;
+    g.keys['ArrowRight'] = true;
+    g.playerUpdate();
+    g.keys['ArrowRight'] = false;
+    expect(g.camX).toBe(200);
+  });
+
+  test('camX resumes moving once boss is cleared', () => {
+    g.boss = null;
+    g.camX = 0;
+    g.player.x = 500;
+    g.playerUpdate();
+    expect(g.camX).toBeGreaterThan(0);
+  });
+
+  test('the player is clamped to the frozen arena\'s right edge while a boss is active', () => {
+    g.boss = g.createBoss(g.LEVELS[0].boss);
+    g.camX = 100;
+    g.player.x = 100 + g.SEAFLOOR; // absurdly far right
+    g.playerUpdate();
+    expect(g.player.x).toBeLessThanOrEqual(g.camX + 800 - 40); // W = 800 in the test canvas mock
+  });
+
+  test('regular spawnEnemy() calls are suppressed by updateEnemies() while a boss is active', () => {
+    g.boss = g.createBoss(g.LEVELS[0].boss);
+    g.enemySpawnTimer = g.spawnInterval; // would normally spawn this frame
+    g.updateEnemies();
+    expect(g.enemies.length).toBe(0);
+  });
+
+  test('spawning resumes once the boss is cleared', () => {
+    g.boss = null;
+    g.enemySpawnTimer = g.spawnInterval;
+    g.updateEnemies();
+    expect(g.enemies.length).toBeGreaterThan(0);
+  });
+});
+
+describe('updateBoss: combat', () => {
+  beforeEach(() => { g.resetGame(); });
+
+  function attackAt(bossX) {
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = true;
+    const atk = g.attackHitbox();
+    g.boss.x = bossX !== undefined ? bossX : atk.x + atk.w / 2;
+    g.boss.y = g.SEAFLOOR;
+  }
+
+  test('a landed player attack reduces boss.hp', () => {
+    g.boss = g.createBoss('anglerfish');
+    const startHp = g.boss.hp;
+    attackAt();
+    g.updateBoss();
+    expect(g.boss.hp).toBe(startHp - 1);
+  });
+
+  test('defeating a non-final-level boss advances to levelComplete and increments level', () => {
+    g.level = 0;
+    g.boss = g.createBoss(g.LEVELS[0].boss);
+    g.boss.hp = 1;
+    attackAt();
+    g.updateBoss();
+    expect(g.boss).toBe(null);
+    expect(g.level).toBe(1);
+    expect(g.gameState).toBe('levelComplete');
+    expect(g.player.dead).toBe(false);
+  });
+
+  test('defeating the final level\'s boss triggers victory (reuses the death pipeline)', () => {
+    g.level = g.LEVELS.length - 1;
+    g.boss = g.createBoss(g.LEVELS[g.level].boss);
+    g.boss.hp = 1;
+    attackAt();
+    g.updateBoss();
+    expect(g.boss).toBe(null);
+    expect(g.runEndReason).toBe('victory');
+    expect(g.player.dead).toBe(true);
+  });
+
+  test('boss defeat awards its score bonus', () => {
+    g.level = 0;
+    g.boss = g.createBoss(g.LEVELS[0].boss);
+    g.boss.hp = 1;
+    const bonus = g.boss.scoreBonus;
+    const startScore = g.player.score;
+    attackAt();
+    g.updateBoss();
+    expect(g.player.score).toBe(startScore + bonus);
+  });
+
+  test('boss body contact damages a non-invincible player', () => {
+    g.boss = g.createBoss('anglerfish');
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.invincible = 0;
+    g.boss.x = 205; g.boss.y = g.SEAFLOOR; // overlapping the player
+    g.player.attacking = false;
+    const startHp = g.player.hp;
+    g.updateBoss();
+    expect(g.player.hp).toBeLessThan(startHp);
+  });
+
+  test('an invincible player takes no contact damage from the boss', () => {
+    g.boss = g.createBoss('anglerfish');
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.invincible = 30;
+    g.boss.x = 205; g.boss.y = g.SEAFLOOR;
+    g.player.attacking = false;
+    const startHp = g.player.hp;
+    g.updateBoss();
+    expect(g.player.hp).toBe(startHp);
+  });
+});
+
+describe('resetGame: level/boss state', () => {
+  test('resets level, boss, and runEndReason to their defaults', () => {
+    g.level = 2;
+    g.boss = g.createBoss('leviathan');
+    g.runEndReason = 'victory';
+    g.bossTentacles.push({ x: 0, telegraphTimer: 1, activeTimer: 0 });
+    g.resetGame();
+    expect(g.level).toBe(0);
+    expect(g.boss).toBe(null);
+    expect(g.runEndReason).toBe('death');
+    expect(g.bossTentacles.length).toBe(0);
+  });
+});
