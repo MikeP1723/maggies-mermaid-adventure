@@ -25,6 +25,52 @@ let inputName       = '';
 let leaderboardCache = [];
 let deadCooldown    = 0;
 
+// Native text input overlaid on the canvas so touch devices get a real OS
+// keyboard instead of relying on physical keydown events (which mobile
+// browsers don't reliably send while a virtual keyboard is up).
+const nameInput = document.getElementById('name-input');
+const NAME_ENTRY_BOX = { w: 320, h: 40, x: W / 2 - 160, y: H / 2 - 4 };
+
+function submitLeaderboardEntry() {
+  addToLeaderboard(inputName, player.score);
+  leaderboardCache = loadLeaderboard();
+  deadCooldown = 45;
+  gameState = 'dead';
+  if (nameInput) {
+    nameInput.style.display = 'none';
+    nameInput.blur();
+    nameInput.value = '';
+  }
+}
+
+// Keeps the overlay positioned over NAME_ENTRY_BOX and visible for the
+// duration of the enterName state; the player taps it to focus it (a
+// programmatic .focus() outside a user gesture won't raise the keyboard
+// on iOS).
+function syncNameInputOverlay() {
+  if (!nameInput || !isTouchDevice()) return;
+  if (nameInput.style.display !== 'block') {
+    nameInput.style.display = 'block';
+    nameInput.value = inputName;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width / W;
+  const scaleY = rect.height / H;
+  nameInput.style.left     = `${rect.left + NAME_ENTRY_BOX.x * scaleX}px`;
+  nameInput.style.top      = `${rect.top  + NAME_ENTRY_BOX.y * scaleY}px`;
+  nameInput.style.width    = `${NAME_ENTRY_BOX.w * scaleX}px`;
+  nameInput.style.height   = `${NAME_ENTRY_BOX.h * scaleY}px`;
+  nameInput.style.fontSize = `${20 * scaleY}px`;
+}
+
+function hideNameInputOverlay() {
+  if (nameInput && nameInput.style.display !== 'none') nameInput.style.display = 'none';
+}
+
+if (nameInput) {
+  nameInput.addEventListener('input', () => { inputName = nameInput.value.slice(0, 12); });
+}
+
 function loadLeaderboard() {
   try { return JSON.parse(localStorage.getItem(LB_KEY) || '[]'); }
   catch { return []; }
@@ -48,11 +94,13 @@ function qualifiesForLeaderboard(score) {
 const keys = {};
 window.addEventListener('keydown', e => {
   if (gameState === 'enterName') {
+    if (nameInput && e.target === nameInput) {
+      // Native input owns typing/backspace here; only intercept Enter to submit.
+      if (e.key === 'Enter') { submitLeaderboardEntry(); e.preventDefault(); }
+      return;
+    }
     if (e.key === 'Enter') {
-      addToLeaderboard(inputName, player.score);
-      leaderboardCache = loadLeaderboard();
-      deadCooldown = 45;
-      gameState = 'dead';
+      submitLeaderboardEntry();
     } else if (e.key === 'Backspace') {
       inputName = inputName.slice(0, -1);
     } else if (e.key.length === 1 && inputName.length < 12) {
@@ -99,10 +147,9 @@ canvas.addEventListener('touchstart',  updateTouchKeys, { passive: false });
 canvas.addEventListener('touchmove',   updateTouchKeys, { passive: false });
 canvas.addEventListener('touchend',    e => {
   if (gameState === 'enterName') {
-    addToLeaderboard(inputName, player.score);
-    leaderboardCache = loadLeaderboard();
-    deadCooldown = 45;
-    gameState = 'dead';
+    // A tap lands here only when it misses the overlaid name input (taps
+    // that hit the input are consumed by it) — treat it as "done typing".
+    submitLeaderboardEntry();
     e.preventDefault();
     return;
   }
@@ -1140,20 +1187,29 @@ function drawNameEntryScreen() {
   ctx.font = '14px "Courier New"';
   ctx.fillText('Enter your name (up to 12 characters)', W / 2, H / 2 - 22);
 
-  const boxW = 320, boxH = 40, boxX = W / 2 - 160, boxY = H / 2 - 4;
+  const { x: boxX, y: boxY, w: boxW, h: boxH } = NAME_ENTRY_BOX;
   ctx.strokeStyle = '#48cae4';
   ctx.lineWidth = 2;
   ctx.strokeRect(boxX, boxY, boxW, boxH);
 
-  const blink = Math.floor(Date.now() / 500) % 2 === 0;
-  ctx.fillStyle = '#caf0f8';
-  ctx.font = 'bold 20px "Courier New"';
-  ctx.fillText(inputName.toUpperCase() + (blink ? '|' : ''), W / 2, boxY + 27);
+  const touch = isTouchDevice();
+  if (!touch) {
+    // On touch devices the native input overlay renders its own text on
+    // top of this box, so drawing it here too would double up.
+    const blink = Math.floor(Date.now() / 500) % 2 === 0;
+    ctx.fillStyle = '#caf0f8';
+    ctx.font = 'bold 20px "Courier New"';
+    ctx.fillText(inputName.toUpperCase() + (blink ? '|' : ''), W / 2, boxY + 27);
+  }
 
   ctx.fillStyle = '#48cae4';
   ctx.font = '13px "Courier New"';
-  ctx.fillText('ENTER to confirm  •  leave blank for ANON', W / 2, H / 2 + 56);
-  ctx.fillText('(mobile: tap anywhere to save)', W / 2, H / 2 + 74);
+  if (touch) {
+    ctx.fillText('Tap the box to type, leave blank for ANON', W / 2, H / 2 + 56);
+    ctx.fillText('Tap outside the box to save', W / 2, H / 2 + 74);
+  } else {
+    ctx.fillText('ENTER to confirm  •  leave blank for ANON', W / 2, H / 2 + 56);
+  }
   ctx.textAlign = 'left';
 }
 
@@ -1280,6 +1336,9 @@ function loop() {
 
   if (gameState === 'enterName') {
     drawNameEntryScreen();
+    syncNameInputOverlay();
+  } else {
+    hideNameInputOverlay();
   }
 }
 
