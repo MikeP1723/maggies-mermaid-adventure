@@ -95,6 +95,10 @@ const sfx = {
   enemyDeath() {
     tone({ freq: 300, glideTo: 900, duration: 0.16, type: 'square', volume: 0.14 });
   },
+  block() {
+    tone({ freq: 1400, duration: 0.05, type: 'square', volume: 0.12 });
+    tone({ freq: 900, duration: 0.04, type: 'square', volume: 0.08, delay: 0.03 });
+  },
   playerHurt() {
     noiseBurst({ duration: 0.15, filterFreq: 500, volume: 0.22 });
     tone({ freq: 180, glideTo: 80, duration: 0.18, type: 'sawtooth', volume: 0.12, delay: 0.02 });
@@ -328,6 +332,7 @@ const C = {
   guppyBody: '#ff9f1c', guppyFin: '#ffbf69', guppyStripe: '#e76f51',
   sharkBody: '#5e6fa3', sharkBelly: '#d4e5f7', sharkEye: '#ff2222',
   jellyBell: '#d8a1ff', jellyGlow: '#f3d9ff', jellyTentacle: '#b57edc',
+  crabBody: '#c1440e', crabShell: '#e76f51', crabClaw: '#f4a261', crabEye: '#2a1208', crabShield: '#7fdbff',
   laserBeam: '#ff4444',
   attackArc: '#caf0f8',
   bubbleColors: ['#90e0ef', '#caf0f8', '#48cae4', '#00b4d8', '#ade8f4'],
@@ -625,7 +630,20 @@ const ENEMY_DEFS = {
   puffer:    { w: 36, h: 30, hp: 4, speed: 0.8,  score: 200, flying: false, swimMid: 50, swimAmp: 40, swimRate: 0.45 },
   shark:     { w: 56, h: 34, hp: 3, speed: 1.5,  score: 300, flying: false, swimMid: 90, swimAmp: 65, swimRate: 0.30 },
   jellyfish: { w: 30, h: 34, hp: 2, speed: 0.35, score: 150, flying: false, swimMid: 70, swimAmp: 22, swimRate: 0.18 },
+  crab:      { w: 42, h: 26, hp: 8, speed: 0.6,  score: 400, flying: false, swimMid: 18, swimAmp: 4,  swimRate: 0.6  },
 };
+
+// Crab is a mini-boss gate, not regular fodder: even when the uniform roll
+// below picks it, it only "sticks" this often — otherwise it rerolls among
+// the common types. Keeps the existing per-type selection line (and the
+// tests that force it) untouched.
+const CRAB_STICK_CHANCE = 0.25;
+
+const CRAB_SWIPE_RANGE     = 70;   // horizontal distance that triggers a claw swipe
+const CRAB_SWIPE_COOLDOWN  = 110;  // frames between swipes
+const CRAB_SWIPE_TELEGRAPH = 18;   // frames the swipe hitbox stays live
+const CRAB_SHIELD_DURATION     = 90;
+const CRAB_VULNERABLE_DURATION = 200;
 
 let enemySpawnTimer = 0;
 let spawnInterval   = 120;
@@ -633,7 +651,11 @@ let difficultyTimer = 0;
 
 function spawnEnemy() {
   const types = Object.keys(ENEMY_DEFS);
-  const type  = types[Math.floor(Math.random() * types.length)];
+  let type = types[Math.floor(Math.random() * types.length)];
+  if (type === 'crab' && Math.random() > CRAB_STICK_CHANCE) {
+    const commonTypes = types.filter(t => t !== 'crab');
+    type = commonTypes[Math.floor(Math.random() * commonTypes.length)];
+  }
   const def   = ENEMY_DEFS[type];
   const spawnX = camX + W + 50;
   const spawnY = SEAFLOOR - def.swimMid;
@@ -649,6 +671,10 @@ function spawnEnemy() {
     hitTimer: 0,
     dead: false, deathTimer: 0,
     shootCooldown: type === 'shark' ? 90 : 0,
+    swipeCooldown: type === 'crab' ? CRAB_SWIPE_COOLDOWN : 0,
+    swipeTimer: 0,
+    shielded: false,
+    shieldCycle: type === 'crab' ? CRAB_VULNERABLE_DURATION : 0,
   });
 }
 
@@ -695,21 +721,55 @@ function updateEnemies() {
       }
     }
 
+    if (e.type === 'crab') {
+      e.shieldCycle--;
+      if (e.shieldCycle <= 0) {
+        e.shielded = !e.shielded;
+        e.shieldCycle = e.shielded ? CRAB_SHIELD_DURATION : CRAB_VULNERABLE_DURATION;
+      }
+
+      if (e.swipeTimer > 0) e.swipeTimer--;
+      e.swipeCooldown--;
+      if (e.swipeCooldown <= 0 && Math.abs(e.x - player.x) < CRAB_SWIPE_RANGE) {
+        e.swipeCooldown = CRAB_SWIPE_COOLDOWN;
+        e.swipeTimer = CRAB_SWIPE_TELEGRAPH;
+      }
+
+      // Claw swipe is a symmetric AoE around the crab rather than a
+      // directional hit, since the player can approach from either side.
+      if (e.swipeTimer > 0 && player.invincible <= 0) {
+        const swipeBox = { x: e.x - CRAB_SWIPE_RANGE, y: e.y - e.h - 10, w: CRAB_SWIPE_RANGE * 2, h: e.h + 20 };
+        if (rectsOverlap(swipeBox, playerBox)) {
+          player.hp--;
+          player.invincible = 60;
+          spawnParticles(player.x, player.y - player.h / 2, 6);
+          if (player.hp <= 0) { player.dead = true; sfx.playerDeath(); }
+          else                { sfx.playerHurt(); }
+        }
+      }
+    }
+
     if (e.x < camX - 150) { enemies.splice(i, 1); continue; }
 
     if (atk) {
       const eBox = { x: e.x - e.w / 2, y: e.y - e.h, w: e.w, h: e.h };
       if (rectsOverlap(atk, eBox) && e.hitTimer <= 0) {
-        e.hp--;
-        e.hitTimer = 15;
-        spawnParticles(e.x, e.y - e.h / 2, 6);
-        sfx.hit();
-        if (e.hp <= 0) {
-          e.dead = true;
-          player.score += e.score;
-          spawnParticles(e.x, e.y - e.h / 2, 14);
-          sfx.enemyDeath();
-          continue;
+        if (e.type === 'crab' && e.shielded) {
+          e.hitTimer = 10;
+          spawnParticles(e.x, e.y - e.h / 2, 4);
+          sfx.block();
+        } else {
+          e.hp--;
+          e.hitTimer = 15;
+          spawnParticles(e.x, e.y - e.h / 2, 6);
+          sfx.hit();
+          if (e.hp <= 0) {
+            e.dead = true;
+            player.score += e.score;
+            spawnParticles(e.x, e.y - e.h / 2, 14);
+            sfx.enemyDeath();
+            continue;
+          }
         }
       }
     }
@@ -965,6 +1025,7 @@ function drawEnemies() {
       case 'puffer':    drawPuffer(e);    break;
       case 'shark':     drawShark(e);     break;
       case 'jellyfish': drawJellyfish(e); break;
+      case 'crab':      drawCrab(e);      break;
     }
 
     ctx.filter = 'none';
@@ -1229,6 +1290,82 @@ function drawJellyfish(e) {
 
   ctx.globalAlpha = 1;
   ctx.restore();
+}
+
+function drawCrab(e) {
+  const swiping  = e.swipeTimer > 0;
+  const clawOpen = swiping ? 1 : 0.35 + Math.sin(e.anim * 0.6) * 0.1;
+
+  // Scuttling legs
+  ctx.strokeStyle = C.crabBody;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 4; i++) {
+    const lx  = -14 + i * 9;
+    const wig = Math.sin(e.anim * 3 + i) * 4;
+    ctx.beginPath();
+    ctx.moveTo(lx, -6);
+    ctx.lineTo(lx + wig * 0.4, 2 + Math.abs(wig) * 0.3);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+
+  // Shell
+  ctx.fillStyle = C.crabShell;
+  ctx.beginPath();
+  ctx.ellipse(0, -14, 20, 13, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = C.crabBody;
+  ctx.beginPath();
+  ctx.ellipse(0, -12, 20, 10, 0, 0.15, Math.PI - 0.15);
+  ctx.fill();
+
+  // Eye stalks
+  ctx.strokeStyle = C.crabBody;
+  ctx.lineWidth = 2;
+  [-6, 6].forEach(ex => {
+    ctx.beginPath();
+    ctx.moveTo(ex, -24);
+    ctx.lineTo(ex, -32);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(ex, -33, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.crabEye;
+    ctx.beginPath(); ctx.arc(ex, -33, 1.5, 0, Math.PI * 2); ctx.fill();
+  });
+
+  // Claws — flare open wide during a swipe telegraph, otherwise idle
+  ctx.fillStyle = C.crabClaw;
+  [-1, 1].forEach(side => {
+    ctx.save();
+    ctx.translate(side * 22, -14);
+    ctx.rotate(side * 0.3 - side * clawOpen * 0.4);
+    ctx.beginPath();
+    ctx.ellipse(side * 10, 0, 10, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(side * 18, -4);
+    ctx.lineTo(side * (24 + clawOpen * 14), -2 - clawOpen * 6);
+    ctx.lineTo(side * 18, 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  });
+
+  // Shield bubble while invulnerable
+  if (e.shielded) {
+    const pulse = 0.4 + 0.2 * Math.sin(Date.now() / 120);
+    ctx.strokeStyle = C.crabShield;
+    ctx.globalAlpha = pulse;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, -16, 32, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = pulse * 0.15;
+    ctx.fillStyle = C.crabShield;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 }
 
 // ─── HUD ──────────────────────────────────────────────────────────────────────

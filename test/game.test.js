@@ -114,9 +114,14 @@ describe('ENEMY_DEFS', () => {
     expect(g.ENEMY_DEFS.shark.score).toBe(300);
   });
 
-  test('puffer has the most HP of any enemy', () => {
+  test('crab (the mini-boss) has the most HP of any enemy', () => {
     const hps = Object.values(g.ENEMY_DEFS).map(d => d.hp);
-    expect(g.ENEMY_DEFS.puffer.hp).toBe(Math.max(...hps));
+    expect(g.ENEMY_DEFS.crab.hp).toBe(Math.max(...hps));
+  });
+
+  test('puffer is tankier than the regular (non-mini-boss) enemies', () => {
+    expect(g.ENEMY_DEFS.puffer.hp).toBeGreaterThan(g.ENEMY_DEFS.guppy.hp);
+    expect(g.ENEMY_DEFS.puffer.hp).toBeGreaterThan(g.ENEMY_DEFS.jellyfish.hp);
   });
 
   test('guppy is the only flying enemy', () => {
@@ -193,6 +198,106 @@ describe('spawnEnemy', () => {
     expect(jelly).toBeDefined();
     expect(jelly.y).toBeLessThan(g.SEAFLOOR);
     expect(jelly.speed).toBeLessThan(g.ENEMY_DEFS.puffer.speed);
+  });
+
+  test('a crab roll sticks when the mini-boss rarity check passes, starting unshielded', (t) => {
+    const types = Object.keys(g.ENEMY_DEFS);
+    const crabIndex = types.indexOf('crab');
+    const crabBucket = (crabIndex + 0.5) / types.length; // lands the *first* roll on crab
+    let call = 0;
+    t.mock.method(Math, 'random', () => {
+      call++;
+      return call === 1 ? crabBucket : 0.1; // 2nd roll <= CRAB_STICK_CHANCE (0.25) -> sticks
+    });
+    g.spawnEnemy();
+    const crab = g.enemies.find(e => e.type === 'crab');
+    expect(crab).toBeDefined();
+    expect(crab.shielded).toBe(false);
+    expect(crab.swipeCooldown).toBeGreaterThan(0);
+  });
+
+  test('a crab roll rerolls to a common type when the mini-boss rarity check fails', (t) => {
+    const types = Object.keys(g.ENEMY_DEFS);
+    const crabIndex = types.indexOf('crab');
+    const crabBucket = (crabIndex + 0.5) / types.length;
+    let call = 0;
+    t.mock.method(Math, 'random', () => {
+      call++;
+      if (call === 1) return crabBucket; // first roll: crab
+      if (call === 2) return 0.9;        // > CRAB_STICK_CHANCE -> reroll away from crab
+      return 0;                          // reroll picks the first common type
+    });
+    g.spawnEnemy();
+    expect(g.enemies.length).toBe(1);
+    expect(g.enemies[0].type).not.toBe('crab');
+  });
+});
+
+// ─── Crab mini-boss (shield / swipe) ───────────────────────────────────────────
+
+describe('Crab mini-boss', () => {
+  beforeEach(() => g.resetGame());
+
+  function makeCrab(overrides = {}) {
+    const crab = {
+      type: 'crab', x: 0, y: g.SEAFLOOR,
+      w: g.ENEMY_DEFS.crab.w, h: g.ENEMY_DEFS.crab.h,
+      hp: g.ENEMY_DEFS.crab.hp, maxHp: g.ENEMY_DEFS.crab.hp,
+      speed: g.ENEMY_DEFS.crab.speed, score: g.ENEMY_DEFS.crab.score,
+      flying: false, vx: 0, vy: 0,
+      anim: 0, hitTimer: 0, dead: false, deathTimer: 0,
+      shootCooldown: 0, swipeCooldown: 999, swipeTimer: 0,
+      shielded: false, shieldCycle: 999,
+      ...overrides,
+    };
+    g.enemies.push(crab);
+    return crab;
+  }
+
+  test('a shielded crab blocks a landed attack and takes no damage', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = true;
+    const atk = g.attackHitbox();
+    const crab = makeCrab({ x: atk.x + atk.w / 2, shielded: true });
+    g.updateEnemies();
+    expect(crab.hp).toBe(g.ENEMY_DEFS.crab.hp);
+    expect(crab.dead).toBe(false);
+  });
+
+  test('an unshielded crab takes damage from a landed attack', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = true;
+    const atk = g.attackHitbox();
+    const crab = makeCrab({ x: atk.x + atk.w / 2, shielded: false });
+    g.updateEnemies();
+    expect(crab.hp).toBe(g.ENEMY_DEFS.crab.hp - 1);
+  });
+
+  test('shieldCycle reaching 0 flips the shielded flag', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR;
+    const crab = makeCrab({ x: 600, shielded: false, shieldCycle: 1 });
+    g.updateEnemies();
+    expect(crab.shielded).toBe(true);
+  });
+
+  test('a crab past its swipe cooldown damages a nearby, non-invincible player', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = false;
+    g.player.invincible = 0;
+    const startHp = g.player.hp;
+    makeCrab({ x: g.player.x + 10, swipeCooldown: 0, shieldCycle: 999 });
+    g.updateEnemies();
+    expect(g.player.hp).toBeLessThan(startHp);
+  });
+
+  test('a crab out of swipe range does not damage the player', () => {
+    g.player.x = 200; g.player.y = g.SEAFLOOR; g.player.facing = 1;
+    g.player.attacking = false;
+    g.player.invincible = 0;
+    const startHp = g.player.hp;
+    makeCrab({ x: g.player.x + 500, swipeCooldown: 0, shieldCycle: 999 });
+    g.updateEnemies();
+    expect(g.player.hp).toBe(startHp);
   });
 });
 
