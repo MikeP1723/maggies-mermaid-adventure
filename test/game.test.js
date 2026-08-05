@@ -469,3 +469,81 @@ describe('Game constants', () => {
     expect(ATTACK_COOLDOWN).toBeGreaterThan(g.ATTACK_DURATION);
   });
 });
+
+// ─── Leaderboard ──────────────────────────────────────────────────────────────
+
+describe('Leaderboard', () => {
+  beforeEach(() => localStorage.clear());
+
+  test('loadLeaderboard returns an empty array when nothing is stored', () => {
+    expect(g.loadLeaderboard()).toEqual([]);
+  });
+
+  test('loadLeaderboard returns [] for corrupted JSON instead of throwing', () => {
+    localStorage.setItem('mma_leaderboard', 'not valid json{{{');
+    expect(g.loadLeaderboard()).toEqual([]);
+  });
+
+  test('addToLeaderboard persists an entry that loadLeaderboard can read back', () => {
+    g.addToLeaderboard('Maggie', 500);
+    const board = g.loadLeaderboard();
+    expect(board.length).toBe(1);
+    expect(board[0].name).toBe('MAGGIE');
+    expect(board[0].score).toBe(500);
+  });
+
+  test('addToLeaderboard uppercases and trims the name', () => {
+    g.addToLeaderboard('  spot  ', 10);
+    expect(g.loadLeaderboard()[0].name).toBe('SPOT');
+  });
+
+  test('addToLeaderboard truncates names longer than 12 characters', () => {
+    g.addToLeaderboard('abcdefghijklmnopqrstuvwxyz', 10);
+    expect(g.loadLeaderboard()[0].name).toBe('ABCDEFGHIJKL');
+  });
+
+  test('addToLeaderboard falls back to ANON for a blank name', () => {
+    g.addToLeaderboard('   ', 10);
+    expect(g.loadLeaderboard()[0].name).toBe('ANON');
+  });
+
+  test('addToLeaderboard keeps the board sorted by score, descending', () => {
+    g.addToLeaderboard('low', 100);
+    g.addToLeaderboard('high', 900);
+    g.addToLeaderboard('mid', 500);
+    const board = g.loadLeaderboard();
+    expect(board.map(e => e.score)).toEqual([900, 500, 100]);
+  });
+
+  test('addToLeaderboard caps the board at 10 entries', () => {
+    for (let i = 0; i < 15; i++) g.addToLeaderboard(`p${i}`, i * 10);
+    expect(g.loadLeaderboard().length).toBe(10);
+  });
+
+  test('addToLeaderboard drops the lowest score once the board is full', () => {
+    for (let i = 0; i < 10; i++) g.addToLeaderboard(`p${i}`, i * 10); // scores 0..90
+    g.addToLeaderboard('newcomer', 45);
+    const scores = g.loadLeaderboard().map(e => e.score);
+    expect(scores.includes(0)).toBe(false); // the lowest score (0) got bumped off
+    expect(scores.includes(45)).toBe(true);
+  });
+
+  test('qualifiesForLeaderboard rejects a score of 0', () => {
+    expect(g.qualifiesForLeaderboard(0)).toBe(false);
+  });
+
+  test('qualifiesForLeaderboard rejects negative scores', () => {
+    expect(g.qualifiesForLeaderboard(-50)).toBe(false);
+  });
+
+  test('qualifiesForLeaderboard accepts any positive score when the board has fewer than 10 entries', () => {
+    expect(g.qualifiesForLeaderboard(1)).toBe(true);
+  });
+
+  test('qualifiesForLeaderboard requires beating the lowest score once the board is full', () => {
+    for (let i = 0; i < 10; i++) g.addToLeaderboard(`p${i}`, (i + 1) * 100); // scores 100..1000
+    expect(g.qualifiesForLeaderboard(50)).toBe(false);
+    expect(g.qualifiesForLeaderboard(100)).toBe(false); // strictly greater required
+    expect(g.qualifiesForLeaderboard(150)).toBe(true);
+  });
+});

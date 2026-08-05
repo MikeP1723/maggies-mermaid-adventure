@@ -19,9 +19,51 @@ function saveHighScore() {
   return false;
 }
 
+// ─── Leaderboard ──────────────────────────────────────────────────────────────
+const LB_KEY = 'mma_leaderboard';
+let inputName       = '';
+let leaderboardCache = [];
+let deadCooldown    = 0;
+
+function loadLeaderboard() {
+  try { return JSON.parse(localStorage.getItem(LB_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function addToLeaderboard(name, score) {
+  const board = loadLeaderboard();
+  board.push({ name: (name.trim() || 'ANON').slice(0, 12).toUpperCase(), score });
+  board.sort((a, b) => b.score - a.score);
+  board.splice(10);
+  localStorage.setItem(LB_KEY, JSON.stringify(board));
+}
+
+function qualifiesForLeaderboard(score) {
+  if (score <= 0) return false;
+  const board = loadLeaderboard();
+  return board.length < 10 || score > board[board.length - 1].score;
+}
+
 // ─── Input ────────────────────────────────────────────────────────────────────
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+window.addEventListener('keydown', e => {
+  if (gameState === 'enterName') {
+    if (e.key === 'Enter') {
+      addToLeaderboard(inputName, player.score);
+      leaderboardCache = loadLeaderboard();
+      deadCooldown = 45;
+      gameState = 'dead';
+    } else if (e.key === 'Backspace') {
+      inputName = inputName.slice(0, -1);
+    } else if (e.key.length === 1 && inputName.length < 12) {
+      inputName += e.key;
+    }
+    e.preventDefault();
+    return;
+  }
+  keys[e.code] = true;
+  e.preventDefault();
+});
 window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 function pressed(codes) { return codes.some(c => keys[c]); }
@@ -56,6 +98,14 @@ function updateTouchKeys(e) {
 canvas.addEventListener('touchstart',  updateTouchKeys, { passive: false });
 canvas.addEventListener('touchmove',   updateTouchKeys, { passive: false });
 canvas.addEventListener('touchend',    e => {
+  if (gameState === 'enterName') {
+    addToLeaderboard(inputName, player.score);
+    leaderboardCache = loadLeaderboard();
+    deadCooldown = 45;
+    gameState = 'dead';
+    e.preventDefault();
+    return;
+  }
   if (gameState === 'start' || gameState === 'dead') { resetGame(); e.preventDefault(); return; }
   updateTouchKeys(e);
 }, { passive: false });
@@ -1016,34 +1066,85 @@ function drawStartScreen() {
   ctx.textAlign = 'left';
 }
 
+function drawNameEntryScreen() {
+  ctx.fillStyle = 'rgba(2,13,26,0.90)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  const pulse = 0.75 + 0.25 * Math.sin(Date.now() / 200);
+  ctx.fillStyle = `rgba(247,215,107,${pulse})`;
+  ctx.font = 'bold 22px "Courier New"';
+  ctx.fillText('YOU MADE THE LEADERBOARD!', W / 2, H / 2 - 84);
+
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = '18px "Courier New"';
+  ctx.fillText(`Score: ${player.score}`, W / 2, H / 2 - 54);
+
+  ctx.fillStyle = '#90e0ef';
+  ctx.font = '14px "Courier New"';
+  ctx.fillText('Enter your name (up to 12 characters)', W / 2, H / 2 - 22);
+
+  const boxW = 320, boxH = 40, boxX = W / 2 - 160, boxY = H / 2 - 4;
+  ctx.strokeStyle = '#48cae4';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+  const blink = Math.floor(Date.now() / 500) % 2 === 0;
+  ctx.fillStyle = '#caf0f8';
+  ctx.font = 'bold 20px "Courier New"';
+  ctx.fillText(inputName.toUpperCase() + (blink ? '|' : ''), W / 2, boxY + 27);
+
+  ctx.fillStyle = '#48cae4';
+  ctx.font = '13px "Courier New"';
+  ctx.fillText('ENTER to confirm  •  leave blank for ANON', W / 2, H / 2 + 56);
+  ctx.fillText('(mobile: tap anywhere to save)', W / 2, H / 2 + 74);
+  ctx.textAlign = 'left';
+}
+
 function drawDeathScreen() {
   ctx.fillStyle = 'rgba(2,13,26,0.82)';
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = 'center';
 
   ctx.fillStyle = '#ff6b9d';
-  ctx.font = 'bold 32px "Courier New"';
-  ctx.fillText('MAGGIE SWAM AWAY...', W / 2, H / 2 - 60);
+  ctx.font = 'bold 28px "Courier New"';
+  ctx.fillText('MAGGIE SWAM AWAY...', W / 2, 46);
 
   ctx.fillStyle = '#caf0f8';
-  ctx.font = '20px "Courier New"';
-  ctx.fillText(`Score: ${player.score}`, W / 2, H / 2 - 18);
+  ctx.font = '18px "Courier New"';
+  ctx.fillText(`Score: ${player.score}`, W / 2, 76);
 
   if (isNewHighScore) {
     const pulse = 0.75 + 0.25 * Math.sin(Date.now() / 150);
-    ctx.fillStyle = `rgba(144,224,239,${pulse})`;
-    ctx.font = 'bold 20px "Courier New"';
-    ctx.fillText('~ NEW HIGH SCORE! ~', W / 2, H / 2 + 12);
+    ctx.fillStyle = `rgba(247,215,107,${pulse})`;
+    ctx.font = 'bold 16px "Courier New"';
+    ctx.fillText('~ NEW HIGH SCORE! ~', W / 2, 100);
   } else if (highScore > 0) {
     ctx.fillStyle = '#90e0ef';
-    ctx.font = '16px "Courier New"';
-    ctx.fillText(`Best: ${highScore}`, W / 2, H / 2 + 12);
+    ctx.font = '14px "Courier New"';
+    ctx.fillText(`Best: ${highScore}`, W / 2, 100);
+  }
+
+  const board = leaderboardCache;
+  if (board.length > 0) {
+    ctx.fillStyle = '#48cae4';
+    ctx.font = 'bold 13px "Courier New"';
+    ctx.fillText('── TOP SCORES ──', W / 2, 128);
+
+    board.slice(0, 5).forEach((entry, i) => {
+      const y = 150 + i * 22;
+      const isYou = entry.score === player.score;
+      ctx.fillStyle = isYou ? '#f7d76b' : '#caf0f8';
+      ctx.font = isYou ? 'bold 13px "Courier New"' : '13px "Courier New"';
+      const medal = ['1.', '2.', '3.', '4.', '5.'][i];
+      ctx.fillText(`${medal} ${entry.name.padEnd(12)}  ${entry.score}`, W / 2, y);
+    });
   }
 
   const blink = Math.floor(Date.now() / 500) % 2 === 0;
   ctx.fillStyle = '#48cae4';
-  ctx.font = 'bold 16px "Courier New"';
-  if (blink) ctx.fillText('Press ENTER or tap to try again!', W / 2, H / 2 + 52);
+  ctx.font = 'bold 14px "Courier New"';
+  if (blink) ctx.fillText('Press ENTER or tap to try again!', W / 2, 278);
   ctx.textAlign = 'left';
 }
 
@@ -1090,7 +1191,16 @@ function loop() {
     if (player.dead) {
       restartTimer++;
       if (restartTimer === 1) isNewHighScore = saveHighScore();
-      if (restartTimer > 60) { gameState = 'dead'; restartTimer = 0; }
+      if (restartTimer > 60) {
+        restartTimer = 0;
+        if (qualifiesForLeaderboard(player.score)) {
+          gameState = 'enterName';
+          inputName = '';
+        } else {
+          leaderboardCache = loadLeaderboard();
+          gameState = 'dead';
+        }
+      }
     } else {
       playerUpdate();
       updateEnemies();
@@ -1107,8 +1217,13 @@ function loop() {
   drawTouchControls();
 
   if (gameState === 'dead') {
+    if (deadCooldown > 0) deadCooldown--;
     drawDeathScreen();
-    if (pressed(['Enter', 'KeyZ'])) resetGame();
+    if (deadCooldown <= 0 && pressed(['Enter', 'KeyZ'])) resetGame();
+  }
+
+  if (gameState === 'enterName') {
+    drawNameEntryScreen();
   }
 }
 
@@ -1122,6 +1237,7 @@ if (typeof module !== 'undefined') {
     spawnParticles, spawnEnemy,
     playerUpdate, updateEnemies, updateDolphin, updateParticles,
     resetGame, saveHighScore,
+    loadLeaderboard, addToLeaderboard, qualifiesForLeaderboard,
     // Mutable state objects (exported by reference so tests can mutate them)
     player, enemies, lasers, dolphin, particles, keys,
     // Constant definitions
@@ -1141,5 +1257,9 @@ if (typeof module !== 'undefined') {
     set enemySpawnTimer(v) { enemySpawnTimer = v; },
     get camX()             { return camX; },
     set camX(v)            { camX = v; },
+    get inputName()        { return inputName; },
+    set inputName(v)       { inputName = v; },
+    get deadCooldown()     { return deadCooldown; },
+    set deadCooldown(v)    { deadCooldown = v; },
   };
 }
