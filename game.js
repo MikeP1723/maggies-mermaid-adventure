@@ -27,11 +27,25 @@ const MUTE_KEY = 'mma_muted';
 let sfxMuted = localStorage.getItem(MUTE_KEY) === '1';
 let audioCtx = null;
 
-function getAudioCtx() {
+// Creates (or resumes) the shared AudioContext — but ONLY when called
+// synchronously from inside a real user-gesture handler (keydown/touchstart).
+// Some browsers, notably Safari, permanently refuse to unlock a context that
+// was *created* outside a gesture, even if resume() is later called from
+// one — so the music loop's interval must never be the one to create it
+// (see getAudioCtx, which it uses instead).
+function unlockAudioCtx() {
   const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-  if (!AC) return null;
+  if (!AC) return;
   if (!audioCtx) audioCtx = new AC();
   if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+// Hands back the already-unlocked context, or null if the player hasn't
+// interacted yet — never creates one itself. SFX calls that fire on the
+// same frame as a gesture (e.g. sfx.attack() right after a keydown) still
+// work because unlockAudioCtx() above already ran first in that handler.
+function getAudioCtx() {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
 }
 
@@ -131,27 +145,30 @@ const sfx = {
 // ─── Background music ─────────────────────────────────────────────────────────
 // A small step-sequencer looping over the same Web Audio primitives as the
 // SFX above — no audio file, consistent with the zero-dependency approach.
-// A sustained bass pad on a calm C–Am–F–G progression plus a sparse
-// pentatonic melody accent; respects the same mute toggle as the SFX.
-const MUSIC_BPM      = 80;
+// Bright, all-major bounce (C–F–G–C, no minor chord) with a punchy
+// square-wave "oom-pah" bass, a bouncing pentatonic melody, and a soft
+// hi-hat-style percussion pulse for drive; respects the SFX mute toggle.
+const MUSIC_BPM      = 132;
 const MUSIC_STEP_SEC = 60 / MUSIC_BPM / 2; // eighth-note step
 const MUSIC_STEPS    = 16;
 
 const MUSIC_BASS = [
-  { step: 0,  freq: 65.41,  dur: 1.8 }, // C2
-  { step: 2,  freq: 130.81, dur: 0.8 }, // C3 echo — gives the sustained root a pulse
-  { step: 4,  freq: 110.00, dur: 1.8 }, // A2
-  { step: 6,  freq: 220.00, dur: 0.8 }, // A3 echo
-  { step: 8,  freq: 87.31,  dur: 1.8 }, // F2
-  { step: 10, freq: 174.61, dur: 0.8 }, // F3 echo
-  { step: 12, freq: 98.00,  dur: 1.8 }, // G2
-  { step: 14, freq: 196.00, dur: 0.8 }, // G3 echo
+  { step: 0,  freq: 65.41,  dur: 0.7 }, // C2
+  { step: 2,  freq: 130.81, dur: 0.5 }, // C3 skip
+  { step: 4,  freq: 87.31,  dur: 0.7 }, // F2
+  { step: 6,  freq: 174.61, dur: 0.5 }, // F3 skip
+  { step: 8,  freq: 98.00,  dur: 0.7 }, // G2
+  { step: 10, freq: 196.00, dur: 0.5 }, // G3 skip
+  { step: 12, freq: 65.41,  dur: 0.7 }, // C2
+  { step: 14, freq: 130.81, dur: 0.5 }, // C3 skip
 ];
 const MUSIC_MELODY = [
-  { step: 1,  freq: 392.00, dur: 1.5 }, // G4
-  { step: 5,  freq: 440.00, dur: 1.5 }, // A4
-  { step: 9,  freq: 349.23, dur: 1.5 }, // F4
-  { step: 13, freq: 329.63, dur: 1.5 }, // E4
+  { step: 0,  freq: 523.25, dur: 0.6 }, // C5
+  { step: 3,  freq: 587.33, dur: 0.4 }, // D5
+  { step: 6,  freq: 659.25, dur: 0.6 }, // E5
+  { step: 8,  freq: 783.99, dur: 0.6 }, // G5
+  { step: 11, freq: 659.25, dur: 0.4 }, // E5
+  { step: 14, freq: 587.33, dur: 0.6 }, // D5
 ];
 
 let musicTimer = null;
@@ -168,7 +185,7 @@ function musicNote(freq, durationSteps, type, volume) {
   osc.type = type;
   osc.frequency.setValueAtTime(freq, t0);
   gain.gain.setValueAtTime(0, t0);
-  gain.gain.linearRampToValueAtTime(volume, t0 + 0.05);
+  gain.gain.linearRampToValueAtTime(volume, t0 + 0.02); // snappy attack — staccato, not a pad
   gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
   osc.connect(gain).connect(ctx.destination);
   osc.start(t0);
@@ -176,8 +193,10 @@ function musicNote(freq, durationSteps, type, volume) {
 }
 
 function musicStepTick() {
-  MUSIC_BASS.forEach(n   => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'sine', 0.11); });
-  MUSIC_MELODY.forEach(n => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'triangle', 0.07); });
+  MUSIC_BASS.forEach(n   => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'square', 0.10); });
+  MUSIC_MELODY.forEach(n => { if (n.step === musicStep) musicNote(n.freq, n.dur, 'triangle', 0.075); });
+  const accent = musicStep % 4 === 0;
+  noiseBurst({ duration: 0.025, filterFreq: accent ? 7000 : 5000, volume: accent ? 0.035 : 0.02 });
   musicStep = (musicStep + 1) % MUSIC_STEPS;
 }
 
@@ -265,11 +284,7 @@ function qualifiesForLeaderboard(score) {
 // ─── Input ────────────────────────────────────────────────────────────────────
 const keys = {};
 window.addEventListener('keydown', e => {
-  // Some browsers only honor AudioContext.resume() when it's called
-  // synchronously inside the actual gesture handler, not merely "sometime
-  // after" one happened (which is all sfx.*()/musicNote() calls do, since
-  // they run from inside the game loop's requestAnimationFrame callback).
-  getAudioCtx();
+  unlockAudioCtx(); // must run synchronously in this real gesture handler — see its comment
   if (gameState === 'enterName') {
     if (nameInput && e.target === nameInput) {
       // Native input owns typing/backspace here; only intercept Enter to submit.
@@ -338,7 +353,7 @@ function updateTouchKeys(e) {
 }
 
 canvas.addEventListener('touchstart',  e => {
-  getAudioCtx(); // see the keydown listener for why this must be synchronous, in-handler
+  unlockAudioCtx(); // see unlockAudioCtx's comment for why this must run in-handler
   if (touchesHitMuteBtn(e.touches)) { e.preventDefault(); return; }
   updateTouchKeys(e);
 }, { passive: false });
